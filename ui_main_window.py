@@ -70,6 +70,7 @@ class MainApp:
         root.after(400, self._tick_transport)
         root.after(1000, self._refresh_status_loop)
         root.bind("<Configure>", self._on_root_configure)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_root_configure(self, _event: tk.Event) -> None:
         if not hasattr(self, "lbl_win_current"):
@@ -357,9 +358,15 @@ class MainApp:
             short = url if len(url) <= 42 else url[:39] + "…"
             self.playlist.insert(tk.END, f"{title}  |  {short}")
 
+    def _persist_playlist_quiet(self) -> None:
+        """Auto-zapis playlisty bez wyskakujących okien."""
+        self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
+        save_config(self._cfg)
+
     def _append_playlist_item(self, url: str, title: str) -> None:
         self._playlist_data.append({"title": title, "url": url})
         self._refresh_playlist_listbox()
+        self._persist_playlist_quiet()
         self._log(f"Dodano do listy: {title}")
 
     def _show_add_playlist_dialog(self) -> None:
@@ -451,10 +458,12 @@ class MainApp:
                     if title:
                         self._playlist_data[new_idx]["title"] = title
                         self._refresh_playlist_listbox()
+                        self._persist_playlist_quiet()
                         self._log(f"Tytuł uzupełniony: {title[:72]}")
                     else:
                         self._playlist_data[new_idx]["title"] = "Bez tytułu"
                         self._refresh_playlist_listbox()
+                        self._persist_playlist_quiet()
                         self._log(f"Tytuł: nie udało się pobrać ({(err or 'brak')[:120]})")
 
                 self.root.after(0, done)
@@ -478,6 +487,7 @@ class MainApp:
         if 0 <= i < len(self._playlist_data):
             del self._playlist_data[i]
         self._refresh_playlist_listbox()
+        self._persist_playlist_quiet()
 
     def _playlist_save(self) -> None:
         if not self._playlist_data:
@@ -658,6 +668,19 @@ class MainApp:
     def _log_clear(self) -> None:
         self.log_view.delete("1.0", tk.END)
 
+    def _on_close(self) -> None:
+        """Zapisz kluczowe dane nawet gdy user nie kliknął „Zapisz ustawienia”."""
+        try:
+            self._cfg.window_width = self.root.winfo_width()
+            self._cfg.window_height = self.root.winfo_height()
+            self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
+            self._read_slots_from_ui()
+            self._cfg.seance_slots = slots_to_json(self._slots)
+            save_config(self._cfg)
+        except Exception:
+            pass
+        self.root.destroy()
+
     def _apply_settings_lock_ui(self) -> None:
         locked = not self._settings_unlocked
         for w in self._settings_widgets:
@@ -760,10 +783,10 @@ class MainApp:
         now_ms = int(self.root.tk.call("clock", "milliseconds"))
         if self._play_busy:
             # Jeśli resolver utknął, odblokuj po czasie i pozwól na ponowną próbę.
-            if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 45000:
+            if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 15000:
                 self._play_busy = False
                 self._play_busy_since_ms = 0
-                self._log("Poprzednia próba przekroczyła timeout (45s). Odblokowano ponowną próbę.")
+                self._log("Poprzednia próba przekroczyła timeout (15s). Odblokowano ponowną próbę.")
             elif (now_ms - self._last_busy_log_ms) > 1500:
                 self._last_busy_log_ms = now_ms
                 self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
@@ -797,9 +820,9 @@ class MainApp:
                 return
             self._play_busy = False
             self._play_busy_since_ms = 0
-            self._log("Timeout pobierania strumienia (45s). Spróbuj ponownie.")
+            self._log("Timeout pobierania strumienia (15s). Spróbuj ponownie.")
 
-        self.root.after(45000, watchdog)
+        self.root.after(15000, watchdog)
 
         def worker() -> None:
             stream: str | None = None
