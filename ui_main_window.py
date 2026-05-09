@@ -14,10 +14,6 @@ from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots
 from security import hash_pin, verify_pin
 from ytdlp_utils import fetch_title, get_audio_stream_url, ytdlp_available
 
-MODE_DISPLAY_TO_VALUE = {"Domyślna": "default", "Teatr": "teatr", "Fińska": "finska"}
-VALUE_TO_DISPLAY = {v: k for k, v in MODE_DISPLAY_TO_VALUE.items()}
-MODE_COMBO_VALUES = ("Domyślna", "Teatr", "Fińska")
-
 
 def install_hints_text() -> str:
     py = sys.executable or "python3"
@@ -76,6 +72,7 @@ class MainApp:
         root.after(1000, self._refresh_status_loop)
         root.bind("<Configure>", self._on_root_configure)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._update_active_countdown()
 
     def _on_root_configure(self, _event: tk.Event) -> None:
         if not hasattr(self, "lbl_win_current"):
@@ -191,6 +188,12 @@ class MainApp:
         st_head = ttk.Frame(right)
         st_head.pack(fill=tk.X, pady=(6, 2))
         ttk.Label(st_head, text="Co się dzieje / następne kroki — zaznacz tekst lub „Kopiuj”").pack(side=tk.LEFT)
+        self.lbl_countdown = ttk.Label(
+            right,
+            text="Aktywne odliczanie: --:--:--",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        self.lbl_countdown.pack(anchor=tk.W, pady=(0, 4))
         self.status_box = tk.Text(right, height=11, wrap=tk.WORD, font=("Courier", 9))
         self.status_box.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
         self._wire_copyable_text(self.status_box, "status")
@@ -272,6 +275,32 @@ class MainApp:
         w.insert("1.0", content)
         w.mark_set(tk.INSERT, "1.0")
 
+    def _update_active_countdown(self) -> None:
+        now = self._schedule.now_seconds()
+        nearest = None
+        nearest_delta = 10**9
+        for s in self._slots:
+            if not s.enabled:
+                continue
+            sec = s.hour * 3600 + s.minute * 60
+            d = sec - now
+            if d > 0 and d < nearest_delta:
+                nearest_delta = d
+                nearest = s
+        if nearest is None:
+            self.lbl_countdown.configure(text="Aktywne odliczanie: brak kolejnych seansów")
+            return
+        hh = nearest_delta // 3600
+        mm = (nearest_delta % 3600) // 60
+        ss = nearest_delta % 60
+        mode_txt = "Teatr" if nearest.mode == "teatr" else "Fińska"
+        self.lbl_countdown.configure(
+            text=(
+                f"Aktywne odliczanie: {nearest.hour:02d}:{nearest.minute:02d} "
+                f"[{mode_txt}] za {hh:02d}:{mm:02d}:{ss:02d}"
+            )
+        )
+
     def _rebuild_seance_rows(self, canvas: tk.Canvas | None = None) -> None:
         cv = canvas or getattr(self, "_seance_canvas", None)
         for w in self.seance_inner.winfo_children():
@@ -297,26 +326,19 @@ class MainApp:
             sm.insert(0, str(slot.minute))
             sm.pack(side=tk.LEFT, padx=2)
 
-            disp = VALUE_TO_DISPLAY.get(
-                slot.mode if slot.mode in ("teatr", "finska", "default") else "default", "Domyślna"
-            )
-            mode_cb = ttk.Combobox(
-                fr,
-                values=MODE_COMBO_VALUES,
-                state="readonly",
-                width=11,
-                justify=tk.CENTER,
-            )
-            mode_cb.set(disp)
-            ttk.Label(fr, text="Tryb:").pack(side=tk.LEFT, padx=(4, 2))
-            mode_cb.pack(side=tk.LEFT, padx=2)
+            mode_var = tk.StringVar(value=slot.mode if slot.mode in ("teatr", "finska") else "teatr")
+            mode_fr = ttk.Frame(fr)
+            mode_fr.pack(side=tk.LEFT, padx=(6, 2))
+            ttk.Label(mode_fr, text="Tryb:").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Radiobutton(mode_fr, text="Teatr", variable=mode_var, value="teatr").pack(side=tk.LEFT, padx=2)
+            ttk.Radiobutton(mode_fr, text="Fińska", variable=mode_var, value="finska").pack(side=tk.LEFT, padx=2)
 
             ttk.Button(fr, text="✕", width=3, command=lambda i=idx: self._seance_remove(i)).pack(
                 side=tk.RIGHT, padx=4
             )
 
             self._seance_row_refs.append(
-                {"var_en": ven, "spin_h": sh, "spin_m": sm, "mode_cb": mode_cb, "idx": idx}
+                {"var_en": ven, "spin_h": sh, "spin_m": sm, "mode_var": mode_var, "idx": idx}
             )
 
         if cv:
@@ -335,8 +357,8 @@ class MainApp:
                 s.minute = max(0, min(59, int(row["spin_m"].get())))
             except (ValueError, tk.TclError):
                 pass
-            disp = row["mode_cb"].get()
-            s.mode = MODE_DISPLAY_TO_VALUE.get(disp, "default")
+            m = row["mode_var"].get()
+            s.mode = m if m in ("teatr", "finska") else "teatr"
 
     def _seance_add(self) -> None:
         self._read_slots_from_ui()
@@ -760,6 +782,7 @@ class MainApp:
 
     def _refresh_status_loop(self) -> None:
         self._refresh_status()
+        self._update_active_countdown()
         self.root.after(1000, self._refresh_status_loop)
 
     def _refresh_status(self) -> None:

@@ -27,15 +27,15 @@ class AppConfig:
         default_factory=lambda: [{"title": "Przykład", "url": ""}]
     )
 
-    """Lista seansów: hour, minute, enabled, mode: teatr|finska|default"""
+    """Lista seansów: hour, minute, enabled, mode: teatr|finska"""
     seance_slots: list[dict[str, Any]] = field(default_factory=list)
 
     announcement_teatr: str = ""
     announcement_finska: str = ""
     announcement_default: str = ""
 
-    window_width: int = 750
-    window_height: int = 600
+    window_width: int = 1200
+    window_height: int = 800
 
 
 def config_path() -> Path:
