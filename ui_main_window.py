@@ -41,6 +41,8 @@ class MainApp:
         self._seance_row_refs: list[dict] = []
         self._last_geom_label = ""
         self._play_busy = False
+        self._play_busy_since_ms = 0
+        self._last_busy_log_ms = 0
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -755,8 +757,16 @@ class MainApp:
         self._player.set_volume(int(float(self.var_vol.get())))
 
     def _on_play(self, _event: tk.Event | None = None) -> None:
+        now_ms = int(self.root.tk.call("clock", "milliseconds"))
         if self._play_busy:
-            self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
+            # Jeśli resolver utknął, odblokuj po czasie i pozwól na ponowną próbę.
+            if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 45000:
+                self._play_busy = False
+                self._play_busy_since_ms = 0
+                self._log("Poprzednia próba przekroczyła timeout (45s). Odblokowano ponowną próbę.")
+            elif (now_ms - self._last_busy_log_ms) > 1500:
+                self._last_busy_log_ms = now_ms
+                self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
             return
         sel = self.playlist.curselection()
         if not sel:
@@ -779,7 +789,17 @@ class MainApp:
 
         label = (entry.get("title") or url)[:80]
         self._play_busy = True
+        self._play_busy_since_ms = now_ms
         self._log(f"Szukam strumienia dla: {label}… (nie blokuje okna)")
+
+        def watchdog() -> None:
+            if not self._play_busy:
+                return
+            self._play_busy = False
+            self._play_busy_since_ms = 0
+            self._log("Timeout pobierania strumienia (45s). Spróbuj ponownie.")
+
+        self.root.after(45000, watchdog)
 
         def worker() -> None:
             stream: str | None = None
@@ -791,6 +811,7 @@ class MainApp:
 
             def finish() -> None:
                 self._play_busy = False
+                self._play_busy_since_ms = 0
                 if not stream:
                     self._log(f"Błąd strumienia: {err or 'nieznany'}")
                     eb = err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?)."
