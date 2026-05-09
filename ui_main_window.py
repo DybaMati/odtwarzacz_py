@@ -845,8 +845,22 @@ class MainApp:
                     self._log(f"VLC nie załadował strumienia: {err2}")
                     messagebox.showerror("VLC", err2 or "Błąd odtwarzacza")
                     return
-                self._player.play()
+                ok_start, err_start = self._player.play()
+                if not ok_start:
+                    self._log(f"VLC play() błąd: {err_start}")
+                    messagebox.showerror(
+                        "VLC",
+                        (err_start or "Nie udało się uruchomić odtwarzania.")
+                        + "\n\nSprawdź wyjście audio systemu (HDMI/Jack) i pakiety VLC.",
+                    )
+                    return
                 self._log(f"Odtwarzanie: {label}")
+
+                def post_check() -> None:
+                    dbg = self._player.debug_state()
+                    self._log(f"VLC debug po starcie: {dbg}")
+
+                self.root.after(2500, post_check)
 
             self.root.after(0, finish)
 

@@ -44,6 +44,12 @@ class PlayerEngine:
             self._player = self._instance.media_player_new()
             if self._player is None:
                 self._init_error = "Nie utworzono odtwarzacza VLC. " + vlc_setup_hint()
+            else:
+                try:
+                    self._player.audio_set_mute(False)
+                    self._player.audio_set_volume(70)
+                except Exception:
+                    pass
         except Exception as e:
             try:
                 self._instance = vlc.Instance("--no-video")
@@ -97,9 +103,20 @@ class PlayerEngine:
             return False, err or "Nieznany błąd URL"
         return self.load_stream_url(stream)
 
-    def play(self) -> None:
-        if self._player:
-            self._player.play()
+    def play(self) -> tuple[bool, str | None]:
+        if not self._player:
+            return False, self._init_error or "Brak VLC"
+        try:
+            self._player.audio_set_mute(False)
+        except Exception:
+            pass
+        try:
+            rc = self._player.play()
+            if rc == -1:
+                return False, "VLC zwrócił błąd startu (play = -1)"
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
     def pause(self) -> None:
         if self._player:
@@ -119,6 +136,18 @@ class PlayerEngine:
         if self._player:
             return float(self._player.get_position())
         return 0.0
+
+    def debug_state(self) -> str:
+        if not self._player:
+            return "no-player"
+        try:
+            st = self._player.get_state()
+            vol = self._player.audio_get_volume()
+            muted = self._player.audio_get_mute()
+            pos = self._player.get_position()
+            return f"state={st}, vol={vol}, muted={muted}, pos={pos:.3f}"
+        except Exception as e:
+            return f"state-error={e}"
 
     def set_position(self, ratio: float) -> None:
         if self._player:
