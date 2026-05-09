@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from config import AppConfig, load_config, save_config
-from player_engine import PlayerEngine
+from player_engine import PlayerEngine, vlc_setup_hint
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
 from ytdlp_utils import fetch_title, get_audio_stream_url, ytdlp_available
@@ -16,6 +17,15 @@ from ytdlp_utils import fetch_title, get_audio_stream_url, ytdlp_available
 MODE_DISPLAY_TO_VALUE = {"Domyślna": "default", "Teatr": "teatr", "Fińska": "finska"}
 VALUE_TO_DISPLAY = {v: k for k, v in MODE_DISPLAY_TO_VALUE.items()}
 MODE_COMBO_VALUES = ("Domyślna", "Teatr", "Fińska")
+
+
+def install_hints_text() -> str:
+    py = sys.executable or "python3"
+    return (
+        vlc_setup_hint()
+        + "\n\n--- yt-dlp (tytuły / YouTube) ---\nsudo apt install -y yt-dlp ffmpeg\n"
+        + f"LUB w venv: {py} -m pip install -U yt-dlp\n"
+    )
 
 
 class MainApp:
@@ -51,6 +61,9 @@ class MainApp:
         if not self._player.available():
             vlc_msg = self._player.init_error() or "Brak VLC (python-vlc / libvlc)."
             self._log(vlc_msg)
+            self._log("--- Komendy instalacji (zaznacz w Log lub Zakładka Ustawienia → pole tekstowe) ---")
+            for line in install_hints_text().splitlines():
+                self._log(line)
 
         root.after(400, self._tick_transport)
         root.after(1000, self._refresh_status_loop)
@@ -165,11 +178,89 @@ class MainApp:
 
         self._rebuild_seance_rows(cv_se)
 
-        ttk.Label(right, text="Co się dzieje / następne kroki").pack(anchor=tk.W, pady=(6, 0))
-        self.status_box = tk.Text(right, height=12, wrap=tk.WORD, state=tk.DISABLED)
-        self.status_box.pack(fill=tk.BOTH, expand=True)
+        st_head = ttk.Frame(right)
+        st_head.pack(fill=tk.X, pady=(6, 2))
+        ttk.Label(st_head, text="Co się dzieje / następne kroki — zaznacz tekst lub „Kopiuj”").pack(side=tk.LEFT)
+        self.status_box = tk.Text(right, height=11, wrap=tk.WORD, font=("Courier", 9))
+        self.status_box.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
+        self._wire_copyable_text(self.status_box, "status")
+        ttk.Button(st_head, text="Kopiuj", command=lambda: self._copy_text_all(self.status_box)).pack(side=tk.RIGHT)
 
         self._seance_canvas = cv_se
+
+    def _clipboard_set(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update_idletasks()
+
+    def _copy_text_selection(self, w: tk.Text) -> None:
+        try:
+            t = w.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            return
+        if t.strip():
+            self._clipboard_set(t)
+
+    def _copy_text_all(self, w: tk.Text) -> None:
+        t = w.get("1.0", tk.END + "-1c")
+        self._clipboard_set(t)
+
+    def _wire_copyable_text(self, w: tk.Text, _name: str = "") -> None:
+        """Tekst jak notatnik: Ctrl+C/A, Bez edycji; PPM menu; zaznaczanie myszą."""
+        w.configure(undo=False, insertwidth=2)
+
+        def block_key(ev: tk.Event) -> str | None:
+            if ev.state & 0x0004 or ev.state & 0x20000:
+                ks = ev.keysym.lower()
+                if ks in ("c", "a"):
+                    return None
+                if ks == "x":
+                    try:
+                        w.get(tk.SEL_FIRST, tk.SEL_LAST)
+                    except tk.TclError:
+                        return "break"
+                    return None
+            nav = (
+                "Left",
+                "Right",
+                "Up",
+                "Down",
+                "Home",
+                "End",
+                "Prior",
+                "Next",
+                "Return",
+                "Escape",
+            )
+            if ev.keysym in nav:
+                return None
+            if len(ev.char or "") == 1:
+                return "break"
+            if ev.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R"):
+                return None
+            return "break"
+
+        def block_paste(_ev: tk.Event) -> str:
+            return "break"
+
+        w.bind("<Key>", block_key)
+        w.bind("<<Paste>>", block_paste)
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Kopiuj zaznaczenie", command=lambda wi=w: self._copy_text_selection(wi))
+        menu.add_command(label="Kopiuj wszystko", command=lambda wi=w: self._copy_text_all(wi))
+
+        def popup(ev: tk.Event) -> None:
+            try:
+                menu.tk_popup(ev.x_root, ev.y_root)
+            finally:
+                menu.grab_release()
+
+        w.bind("<Button-3>", popup)
+
+    def _set_notes_text(self, w: tk.Text, content: str) -> None:
+        w.delete("1.0", tk.END)
+        w.insert("1.0", content)
+        w.mark_set(tk.INSERT, "1.0")
 
     def _rebuild_seance_rows(self, canvas: tk.Canvas | None = None) -> None:
         cv = canvas or getattr(self, "_seance_canvas", None)
@@ -432,6 +523,18 @@ class MainApp:
         )
         self.lbl_win_saved.pack(anchor=tk.W, padx=8, pady=(0, 8))
 
+        cmd_fr = ttk.LabelFrame(inner, text="Instalacja VLC / yt-dlp — zaznacz myszą, Ctrl+C lub PPM → Kopiuj")
+        cmd_fr.pack(fill=tk.X, padx=4, pady=6)
+        self.install_cmds_text = tk.Text(cmd_fr, height=10, wrap=tk.WORD, font=("Courier", 9))
+        self.install_cmds_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self._wire_copyable_text(self.install_cmds_text, "install_cmds")
+        self._set_notes_text(self.install_cmds_text, install_hints_text())
+        ttk.Button(
+            cmd_fr,
+            text="Kopiuj całą instalację do schowka",
+            command=lambda: self._copy_text_all(self.install_cmds_text),
+        ).pack(pady=(0, 6))
+
         pin_fr = ttk.LabelFrame(inner, text="Dostęp do ustawień (PIN)")
         pin_fr.pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(pin_fr, text="PIN:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
@@ -533,8 +636,26 @@ class MainApp:
     def _build_log_tab(self, notebook: ttk.Notebook) -> None:
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="Log")
-        self.log_view = tk.Text(tab, wrap=tk.WORD, state=tk.DISABLED)
-        self.log_view.pack(fill=tk.BOTH, expand=True)
+        bar = ttk.Frame(tab)
+        bar.pack(fill=tk.X)
+        ttk.Button(bar, text="Kopiuj zaznaczenie", command=lambda: self._copy_text_selection(self.log_view)).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(bar, text="Kopiuj cały log", command=lambda: self._copy_text_all(self.log_view)).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(bar, text="Wyczyść log", command=self._log_clear).pack(side=tk.LEFT, padx=12)
+        ttk.Label(
+            bar,
+            text="Tekst jak w notatniku: zaznacz myszą, Ctrl+C lub PPM",
+        ).pack(side=tk.RIGHT, padx=6)
+
+        self.log_view = tk.Text(tab, wrap=tk.WORD, height=22, font=("Courier", 9))
+        self.log_view.pack(fill=tk.BOTH, expand=True, pady=4)
+        self._wire_copyable_text(self.log_view, "log")
+
+    def _log_clear(self) -> None:
+        self.log_view.delete("1.0", tk.END)
 
     def _apply_settings_lock_ui(self) -> None:
         locked = not self._settings_unlocked
@@ -612,10 +733,7 @@ class MainApp:
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()
-        self.status_box.configure(state=tk.NORMAL)
-        self.status_box.delete("1.0", tk.END)
-        self.status_box.insert("1.0", body)
-        self.status_box.configure(state=tk.DISABLED)
+        self._set_notes_text(self.status_box, body)
 
     def _tick_transport(self) -> None:
         if self._player.available() and not self._slider_sync:
@@ -654,7 +772,10 @@ class MainApp:
         if not self._player.available():
             msg = self._player.init_error() or "Brak VLC."
             self._log(msg)
-            messagebox.showerror("Brak VLC", msg)
+            messagebox.showerror(
+                "Brak VLC",
+                msg + "\n\nPełna lista poleceń jest w zakładce Ustawienia (pole do skopiowania) i w Logu.",
+            )
             return
 
         label = (entry.get("title") or url)[:80]
@@ -668,10 +789,8 @@ class MainApp:
                 self._play_busy = False
                 if not stream:
                     self._log(f"Błąd strumienia: {err or 'nieznany'}")
-                    messagebox.showerror(
-                        "Odtwarzacz",
-                        err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?).",
-                    )
+                    eb = err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?)."
+                    messagebox.showerror("Odtwarzacz", eb + "\n\n(Szczegóły są w zakładce Log — można skopiować.)")
                     return
                 ok_play, err2 = self._player.load_stream_url(stream)
                 if not ok_play:
@@ -689,7 +808,5 @@ class MainApp:
         self._player.pause()
 
     def _log(self, msg: str) -> None:
-        self.log_view.configure(state=tk.NORMAL)
         self.log_view.insert(tk.END, msg + "\n")
         self.log_view.see(tk.END)
-        self.log_view.configure(state=tk.DISABLED)

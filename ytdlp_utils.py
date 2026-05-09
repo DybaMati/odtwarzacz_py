@@ -31,13 +31,34 @@ def _youtube_like(url: str) -> bool:
     return "youtube.com" in u or "youtu.be" in u
 
 
-def _title_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
+def _title_via_cli_print(cli: str, page_url: str) -> str | None:
+    """Szybka ścieżka — bez pełnego JSON (zwykle znacznie krócej)."""
+    try:
+        r = subprocess.run(
+            [cli, "--no-warnings", "--skip-download", "--print", "%(title)s", page_url],
+            capture_output=True,
+            text=True,
+            timeout=11,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    for line in (r.stdout or "").strip().splitlines():
+        t = line.strip()
+        if t:
+            return t
+    return None
+
+
+def _title_via_cli_json(cli: str, page_url: str) -> tuple[str | None, str | None]:
     try:
         r = subprocess.run(
             [cli, "--dump-json", "--skip-download", "--no-warnings", page_url],
             capture_output=True,
             text=True,
-            timeout=28,
+            timeout=18,
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -81,32 +102,64 @@ def fetch_title(url: str) -> tuple[str | None, str | None]:
     if not url.strip():
         return None, "Pusty URL"
 
+    cli = _which_ytdlp_cli()
+    if cli:
+        fast = _title_via_cli_print(cli, url)
+        if fast:
+            return fast, None
+
     try:
         from yt_dlp import YoutubeDL
     except ImportError:
         YoutubeDL = None  # type: ignore
 
     if YoutubeDL is not None:
-        opts: dict[str, Any] = {
+        fast_opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "socket_timeout": 10,
+        }
+        try:
+            with YoutubeDL(fast_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info:
+                title = (info.get("title") or info.get("fulltitle") or "").strip()
+                if title:
+                    return title, None
+        except Exception:
+            pass
+
+        slow_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": False,
-            "socket_timeout": 18,
+            "socket_timeout": 16,
         }
         try:
-            with YoutubeDL(opts) as ydl:
+            with YoutubeDL(slow_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
-            return None, str(e)
+            last_py = str(e)
+            if cli:
+                t2, err2 = _title_via_cli_json(cli, url)
+                if t2:
+                    return t2, None
+                return None, err2 or last_py
+            return None, last_py
         if not info:
             return None, "Brak danych z yt-dlp"
         title = (info.get("title") or info.get("fulltitle") or "").strip()
-        return (title or None), None
+        if title:
+            return title, None
+        if cli:
+            return _title_via_cli_json(cli, url)
+        return None, "Brak tytułu"
 
-    cli = _which_ytdlp_cli()
     if cli:
-        return _title_via_cli(cli, url)
+        return _title_via_cli_json(cli, url)
     return None, INSTALL_YT_DLP_MSG
 
 

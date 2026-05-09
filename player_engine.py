@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -14,9 +15,11 @@ except ImportError:
 
 
 def vlc_setup_hint() -> str:
+    py = sys.executable or "python3"
     return (
-        "VLC dla Pythona: sudo apt install vlc libvlc-dev && "
-        "w venv: pip install python-vlc  (ten sam venv co python main.py)"
+        "sudo apt install -y vlc libvlc-dev ffmpeg\n"
+        f"{py} -m pip install python-vlc\n"
+        "(uruchamiaj zawsze przez ten sam Python co powyżej, np. po „source .venv/bin/activate”)"
     )
 
 

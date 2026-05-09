@@ -45,6 +45,8 @@ Domyślnie **750×600** px (minimalnie trochę mniej, żeby się mieściło UI).
 
 Konfiguracja zapisywana do pliku `config.json` (obok `main.py`): pole `yt_playlist` oraz `seance_slots`.
 
+**Log i komunikaty:** w zakładce „Log” oraz w polu „Instalacja VLC / yt-dlp” (Ustawienia) tekst można **zaznaczyć myszą** i skopiować (**Ctrl+C** lub **PPM → Kopiuj**). Są też przyciski „Kopiuj cały log” / „Kopiuj zaznaczenie”.
+
 - **Zapisz playlistę** — zapisuje listę utworów.
 - **Zapisz harmonogram** — zapisuje godziny i tryby seansów (bez PIN-u).
 - **Zapisz ustawienia** (zakładka Ustawienia) — zapisuje też aktualną playlistę i seanse do jednego pliku.
