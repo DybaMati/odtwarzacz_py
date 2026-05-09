@@ -18,7 +18,7 @@ class SeanceSlot:
     hour: int
     minute: int
     enabled: bool = True
-    mode: str = "teatr"  # teatr | finska
+    mode: str = ""  # "", teatr | finska
 
 
 def wall_seconds(h: int, m: int) -> int:
@@ -140,9 +140,9 @@ def slots_from_config(cfg: AppConfig) -> list[SeanceSlot]:
             h = int(item.get("hour", 0))
             m = int(item.get("minute", 0))
             en = bool(item.get("enabled", True))
-            mode = str(item.get("mode", "teatr")).strip().lower()
-            if mode not in ("teatr", "finska"):
-                mode = "teatr"
+            mode = str(item.get("mode", "")).strip().lower()
+            if mode not in ("teatr", "finska", ""):
+                mode = ""
             h = max(0, min(23, h))
             m = max(0, min(59, m))
             out.append(SeanceSlot(hour=h, minute=m, enabled=en, mode=mode))
@@ -152,4 +152,4 @@ def slots_from_config(cfg: AppConfig) -> list[SeanceSlot]:
 
 
 def mode_label_pl(mode: str) -> str:
-    return {"teatr": "Teatr", "finska": "Fińska"}.get(mode, mode)
+    return {"teatr": "Teatr", "finska": "Fińska", "": "Brak"}[mode if mode in ("teatr", "finska", "") else ""]

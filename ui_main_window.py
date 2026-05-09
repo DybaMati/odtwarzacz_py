@@ -300,7 +300,7 @@ class MainApp:
         hh = nearest_delta // 3600
         mm = (nearest_delta % 3600) // 60
         ss = nearest_delta % 60
-        mode_txt = "Teatr" if nearest.mode == "teatr" else "Fińska"
+        mode_txt = "Teatr" if nearest.mode == "teatr" else ("Fińska" if nearest.mode == "finska" else "Brak")
         txt = (
             f"Aktywne odliczanie: {nearest.hour:02d}:{nearest.minute:02d} "
             f"[{mode_txt}] za {hh:02d}:{mm:02d}:{ss:02d}"
@@ -334,7 +334,7 @@ class MainApp:
             sm.insert(0, str(slot.minute))
             sm.pack(side=tk.LEFT, padx=2)
 
-            mode_var = tk.StringVar(value=slot.mode if slot.mode in ("teatr", "finska") else "teatr")
+            mode_var = tk.StringVar(value=slot.mode if slot.mode in ("teatr", "finska") else "")
             mode_fr = ttk.Frame(fr)
             mode_fr.pack(side=tk.LEFT, padx=(6, 2))
             ttk.Label(mode_fr, text="Tryb:").pack(side=tk.LEFT, padx=(0, 2))
@@ -366,12 +366,12 @@ class MainApp:
             except (ValueError, tk.TclError):
                 pass
             m = row["mode_var"].get()
-            s.mode = m if m in ("teatr", "finska") else "teatr"
+            s.mode = m if m in ("teatr", "finska") else ""
 
     def _seance_add(self) -> None:
         self._read_slots_from_ui()
-        last = self._slots[-1] if self._slots else SeanceSlot(13, 0, True, "default")
-        self._slots.append(SeanceSlot(last.hour, last.minute, True, "default"))
+        last = self._slots[-1] if self._slots else SeanceSlot(13, 0, True, "")
+        self._slots.append(SeanceSlot(last.hour, last.minute, True, ""))
         self._rebuild_seance_rows()
 
     def _seance_remove(self, index: int) -> None:
@@ -660,6 +660,10 @@ class MainApp:
         self.path_default = ttk.Entry(ann_fr)
         self.path_default.insert(0, self._cfg.announcement_default)
         self.path_default.grid(row=2, column=1, sticky=tk.EW, padx=4)
+        ttk.Label(ann_fr, text="Koniec dnia (endDay):").grid(row=3, column=0, sticky=tk.W, padx=4)
+        self.path_end_day = ttk.Entry(ann_fr)
+        self.path_end_day.insert(0, self._cfg.announcement_end_day)
+        self.path_end_day.grid(row=3, column=1, sticky=tk.EW, padx=4)
         ann_fr.columnconfigure(1, weight=1)
 
         ttk.Button(inner, text="Zapisz ustawienia", command=self._save_settings).pack(pady=10)
@@ -678,6 +682,7 @@ class MainApp:
             self.path_teatr,
             self.path_finska,
             self.path_default,
+            self.path_end_day,
         )
         self._apply_settings_lock_ui()
 
@@ -774,6 +779,7 @@ class MainApp:
         self._cfg.announcement_teatr = self.path_teatr.get().strip()
         self._cfg.announcement_finska = self.path_finska.get().strip()
         self._cfg.announcement_default = self.path_default.get().strip()
+        self._cfg.announcement_end_day = self.path_end_day.get().strip()
         self._cfg.window_width = self.root.winfo_width()
         self._cfg.window_height = self.root.winfo_height()
         self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
@@ -820,7 +826,14 @@ class MainApp:
             if not in_window or key in self._ann_fired_keys:
                 continue
 
-            mode = s.mode if s.mode in ("teatr", "finska") else "teatr"
+            mode = s.mode if s.mode in ("teatr", "finska") else ""
+            if mode == "":
+                self._ann_fired_keys.add(key)
+                self._log(
+                    f"Zapowiedź dla seansu {s.hour:02d}:{s.minute:02d} pominięta: "
+                    "nie wybrano trybu (Teatr/Fińska)."
+                )
+                continue
             path = (self._cfg.announcement_teatr if mode == "teatr" else self._cfg.announcement_finska).strip()
             if not path:
                 self._ann_fired_keys.add(key)
@@ -834,22 +847,50 @@ class MainApp:
                 self._log("Zapowiedź pominięta: brak VLC.")
                 continue
 
+            self._ann_fired_keys.add(key)
+            self._play_announcement_with_duck(path, mode, s.hour, s.minute, pre_min)
+
+    def _play_announcement_with_duck(self, path: str, mode: str, h: int, m: int, pre_min: int) -> None:
+        """Ścisz YT (fade-out), odpal zapowiedź, przywróć głośność dla zapowiedzi."""
+        try:
+            base_vol = max(0, min(100, int(self._player.get_volume())))
+        except Exception:
+            base_vol = 70
+        fade_ms = max(0, int(self._cfg.fade_out_ms))
+        steps = max(1, min(30, int(fade_ms / 120) if fade_ms > 0 else 1))
+        step_delay = max(20, int(fade_ms / steps) if steps > 0 else 20)
+
+        self._log(
+            f"START zapowiedzi {mode} dla seansu {h:02d}:{m:02d} ({pre_min} min przed). "
+            f"Duck YT: {base_vol}% -> 0% w {fade_ms}ms"
+        )
+
+        def after_duck() -> None:
+            self._player.pause()
             ok_load, err_load = self._player.load_file(path)
             if not ok_load:
-                self._ann_fired_keys.add(key)
-                self._log(
-                    f"Zapowiedź {mode} {s.hour:02d}:{s.minute:02d} błąd ładowania: {err_load}"
-                )
-                continue
+                self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} błąd ładowania: {err_load}")
+                return
+            # Zapowiedź ma grać normalnie (jak przed duckiem)
+            self._player.set_volume(base_vol if base_vol > 0 else 70)
             ok_play, err_play = self._player.play()
-            self._ann_fired_keys.add(key)
             if not ok_play:
-                self._log(f"Zapowiedź {mode} {s.hour:02d}:{s.minute:02d} play() błąd: {err_play}")
+                self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} play() błąd: {err_play}")
+
+        if base_vol <= 0 or steps <= 1:
+            self._player.set_volume(0)
+            self.root.after(30, after_duck)
+            return
+
+        def step(i: int) -> None:
+            ratio = max(0.0, 1.0 - (i / steps))
+            self._player.set_volume(int(base_vol * ratio))
+            if i >= steps:
+                after_duck()
             else:
-                self._log(
-                    f"START zapowiedzi {mode} dla seansu {s.hour:02d}:{s.minute:02d} "
-                    f"({pre_min} min przed)."
-                )
+                self.root.after(step_delay, lambda: step(i + 1))
+
+        step(1)
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()
