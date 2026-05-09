@@ -8,6 +8,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
+from pathlib import Path
 
 from announcement_player import AnnouncementPlayer
 from config import AppConfig, load_config, save_config
@@ -57,6 +58,7 @@ class MainApp:
         self._yt_volume_before_announcement = 70
         self._ws_alarm_status = "off"
         self._ws_player_status = "off"
+        self._ann_status_text = "idle"
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -180,8 +182,16 @@ class MainApp:
         ttk.Button(transport, text="Pauza", command=self._on_pause).pack(side=tk.LEFT)
         self.lbl_loading = ttk.Label(left, text="YT: gotowy")
         self.lbl_loading.pack(anchor=tk.W, pady=(4, 0))
-        self.lbl_ann_player_state = ttk.Label(left, text="Zapowiedź player: idle")
-        self.lbl_ann_player_state.pack(anchor=tk.W)
+        ann_box = ttk.LabelFrame(left, text="Odtwarzacz zapowiedzi (osobny)")
+        ann_box.pack(fill=tk.X, pady=(4, 4))
+        self.lbl_ann_player_state = ttk.Label(ann_box, text="Status: idle")
+        self.lbl_ann_player_state.pack(anchor=tk.W, padx=6, pady=(4, 2))
+        self.lbl_ann_player_file = ttk.Label(ann_box, text="Plik: —")
+        self.lbl_ann_player_file.pack(anchor=tk.W, padx=6, pady=(0, 4))
+        ann_btns = ttk.Frame(ann_box)
+        ann_btns.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Button(ann_btns, text="Test ogólnej", command=self._test_default_announcement).pack(side=tk.LEFT)
+        ttk.Button(ann_btns, text="Stop", command=self._stop_announcement_manual).pack(side=tk.LEFT, padx=(6, 0))
         self.lbl_ws_alarm_state = ttk.Label(left, text="WS alarmy: off (brak URL)")
         self.lbl_ws_alarm_state.pack(anchor=tk.W)
         self.lbl_ws_player_state = ttk.Label(left, text="WS player: off (brak URL)")
@@ -895,18 +905,20 @@ class MainApp:
                 continue
 
             mode = s.mode if s.mode in ("teatr", "finska") else ""
-            if mode == "":
-                self._ann_fired_keys.add(key)
-                self._log(
-                    f"Zapowiedź dla seansu {s.hour:02d}:{s.minute:02d} pominięta: "
-                    "nie wybrano trybu (Teatr/Fińska)."
-                )
-                continue
-            path = (self._cfg.announcement_teatr if mode == "teatr" else self._cfg.announcement_finska).strip()
+            if mode == "teatr":
+                path = self._cfg.announcement_teatr.strip()
+                mode_name = "teatr"
+            elif mode == "finska":
+                path = self._cfg.announcement_finska.strip()
+                mode_name = "finska"
+            else:
+                path = self._cfg.announcement_default.strip()
+                mode_name = "ogólna"
+
             if not path:
                 self._ann_fired_keys.add(key)
                 self._log(
-                    f"Zapowiedź {mode} dla seansu {s.hour:02d}:{s.minute:02d} pominięta: "
+                    f"Zapowiedź {mode_name} dla seansu {s.hour:02d}:{s.minute:02d} pominięta: "
                     "brak ścieżki pliku w Ustawieniach."
                 )
                 continue
@@ -917,11 +929,15 @@ class MainApp:
 
             if in_prepare_window and key not in self._ann_prepared_keys:
                 self._ann_prepared_keys.add(key)
-                self._prepare_announcement_duck(key, mode, s.hour, s.minute, ann_s)
+                self._log(
+                    f"Seans {s.hour:02d}:{s.minute:02d}: start fade przed zapowiedzią "
+                    f"({mode_name}) o {ann_s // 3600:02d}:{(ann_s % 3600) // 60:02d}."
+                )
+                self._prepare_announcement_duck(key, mode_name, s.hour, s.minute, ann_s)
                 continue
 
             if in_start_window:
-                self._start_announcement(key, path, mode, s.hour, s.minute, pre_min)
+                self._start_announcement(key, path, mode_name, s.hour, s.minute, pre_min)
 
     def _prepare_announcement_duck(self, key: str, mode: str, h: int, m: int, ann_s: int) -> None:
         """Przygotuj fade tak, aby zapowiedź ruszyła dokładnie o godzinie zapowiedzi."""
@@ -966,6 +982,9 @@ class MainApp:
         if key in self._ann_fired_keys:
             return
         self._announcement_active = True
+        self._ann_status_text = "start"
+        if hasattr(self, "lbl_ann_player_file"):
+            self.lbl_ann_player_file.configure(text=f"Plik: {Path(path).name}")
         if key not in self._ann_prepared_keys:
             try:
                 self._yt_volume_before_announcement = max(0, min(100, int(self._player.get_volume())))
@@ -993,10 +1012,30 @@ class MainApp:
         self._announcement_active = False
         self._ann_fired_keys.add(key)
         self._player.set_volume(self._yt_volume_before_announcement or 70)
+        self._ann_status_text = "idle"
         if failed:
             self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} nie wystartowała; YT przywrócone.")
         else:
             self._log(f"KONIEC zapowiedzi {mode} {h:02d}:{m:02d}; YT wraca od razu.")
+
+    def _test_default_announcement(self) -> None:
+        path = (self._cfg.announcement_default or "").strip()
+        if not path:
+            self._log("Test zapowiedzi ogólnej: brak ścieżki w Ustawieniach.")
+            return
+        self._log("Test zapowiedzi ogólnej: start.")
+        self._ann_status_text = "test"
+        if hasattr(self, "lbl_ann_player_file"):
+            self.lbl_ann_player_file.configure(text=f"Plik: {Path(path).name}")
+        ok, err = self._ann_player.play_file(path)
+        if not ok:
+            self._ann_status_text = "idle"
+            self._log(f"Test zapowiedzi ogólnej: błąd: {err}")
+
+    def _stop_announcement_manual(self) -> None:
+        self._ann_player.stop()
+        self._ann_status_text = "idle"
+        self._log("Zapowiedź zatrzymana ręcznie.")
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()
@@ -1007,8 +1046,12 @@ class MainApp:
     def _tick_transport(self) -> None:
         next_ms = 1200
         if hasattr(self, "lbl_ann_player_state"):
-            ann_txt = "odtwarza" if self._ann_player.is_playing() else "idle"
-            self.lbl_ann_player_state.configure(text=f"Zapowiedź player: {ann_txt}")
+            is_play = self._ann_player.is_playing()
+            ann_txt = "odtwarza" if is_play else self._ann_status_text
+            if not is_play and ann_txt == "start":
+                ann_txt = "idle"
+                self._ann_status_text = "idle"
+            self.lbl_ann_player_state.configure(text=f"Status: {ann_txt}")
         if self._player.available() and not self._slider_sync:
             pos = self._player.get_position()
             self.var_pos.set(int(pos * 1000))
