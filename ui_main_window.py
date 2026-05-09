@@ -1,26 +1,9 @@
-"""Główne okno: zakładka Odtwarzacz+seanse, Ustawienia, Log."""
+"""Główne okno: zakładka Odtwarzacz+seanse, Ustawienia, Log — Tkinter (działa na Raspberry Pi)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QSlider,
-    QSpinBox,
-    QTabWidget,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+import tkinter as tk
+from tkinter import messagebox, ttk
 
 from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine
@@ -28,177 +11,193 @@ from schedule_engine import ScheduleEngine, default_slots_thirteen_to_twentytwo
 from security import hash_pin, verify_pin
 
 
-class MainWindow(QMainWindow):
-    def __init__(self) -> None:
-        super().__init__()
+class MainApp:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
         self._cfg = load_config()
         self._slots = default_slots_thirteen_to_twentytwo()
         self._schedule = ScheduleEngine(lambda: self._cfg, self._slots)
         self._player = PlayerEngine()
         self._settings_unlocked = not bool(self._cfg.pin_hash_hex)
+        self._slider_sync = False
 
-        self.setWindowTitle("Odtwarzacz — seanse")
+        root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
         h = max(520, self._cfg.window_height)
-        self.resize(w, h)
-        self.setMinimumSize(700, 560)
+        root.geometry(f"{w}x{h}")
+        root.minsize(700, 560)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_player_tab(), "Odtwarzacz i seanse")
-        tabs.addTab(self._build_settings_tab(), "Ustawienia")
-        tabs.addTab(self._build_log_tab(), "Log")
+        notebook = ttk.Notebook(root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-        self.setCentralWidget(tabs)
-
-        self._poll_timer = QTimer(self)
-        self._poll_timer.timeout.connect(self._tick_transport)
-        self._poll_timer.start(400)
-
-        self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self._refresh_status)
-        self._status_timer.start(1000)
+        self._build_player_tab(notebook)
+        self._build_settings_tab(notebook)
+        self._build_log_tab(notebook)
 
         self._log("Start aplikacji.")
         if not self._player.available():
             self._log("Ostrzeżenie: brak python-vlc / libvlc — transport będzie pusty.")
 
-    def _build_player_tab(self) -> QWidget:
-        w = QWidget()
-        layout = QHBoxLayout(w)
+        root.after(400, self._tick_transport)
+        root.after(1000, self._refresh_status_loop)
 
-        left = QVBoxLayout()
-        self.playlist = QListWidget()
+    def _build_player_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook)
+        notebook.add(tab, text="Odtwarzacz i seanse")
+
+        pan = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        pan.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(pan, width=360)
+        right = ttk.Frame(pan, width=320)
+        pan.add(left, weight=3)
+        pan.add(right, weight=2)
+
+        ttk.Label(left, text="Lista odtwarzania (tytuł + URL — config.json)").pack(anchor=tk.W)
+        self.playlist = tk.Listbox(left, height=12, exportselection=False)
+        self.playlist.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         self._fill_playlist_from_config()
-        left.addWidget(QLabel("Lista odtwarzania (tytuł + URL YouTube / plik — docelowo)"))
-        left.addWidget(self.playlist)
 
-        transport = QHBoxLayout()
-        self.btn_play = QPushButton("Odtwarzaj")
-        self.btn_pause = QPushButton("Pauza")
-        self.btn_play.clicked.connect(self._on_play)
-        self.btn_pause.clicked.connect(self._on_pause)
-        transport.addWidget(self.btn_play)
-        transport.addWidget(self.btn_pause)
-        left.addLayout(transport)
+        row = ttk.Frame(left)
+        row.pack(fill=tk.X)
+        ttk.Button(row, text="Odtwarzaj", command=self._on_play).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(row, text="Pauza", command=self._on_pause).pack(side=tk.LEFT)
 
-        self.slider_pos = QSlider(Qt.Orientation.Horizontal)
-        self.slider_pos.setRange(0, 1000)
-        self.slider_pos.sliderMoved.connect(self._on_seek)
-        left.addWidget(QLabel("Pozycja"))
-        left.addWidget(self.slider_pos)
+        ttk.Label(left, text="Pozycja").pack(anchor=tk.W)
+        self.var_pos = tk.IntVar(value=0)
+        self.scale_pos = ttk.Scale(
+            left,
+            from_=0,
+            to=1000,
+            orient=tk.HORIZONTAL,
+            variable=self.var_pos,
+            command=self._on_seek_scale,
+        )
+        self.scale_pos.pack(fill=tk.X)
 
-        self.slider_vol = QSlider(Qt.Orientation.Horizontal)
-        self.slider_vol.setRange(0, 100)
-        self.slider_vol.setValue(70)
-        self.slider_vol.valueChanged.connect(self._on_volume)
-        left.addWidget(QLabel("Głośność"))
-        left.addWidget(self.slider_vol)
+        ttk.Label(left, text="Głośność").pack(anchor=tk.W, pady=(8, 0))
+        self.var_vol = tk.IntVar(value=70)
+        self.scale_vol = ttk.Scale(
+            left,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            variable=self.var_vol,
+            command=self._on_volume_scale,
+        )
+        self.scale_vol.pack(fill=tk.X)
 
-        right = QVBoxLayout()
-        right.addWidget(QLabel("Harmonogram seansów (domyślnie 13:00–22:00)"))
-        self.seance_list = QTextEdit()
-        self.seance_list.setReadOnly(True)
-        self.seance_list.setMaximumHeight(160)
-        self._refresh_seance_text()
-        right.addWidget(self.seance_list)
+        ttk.Label(right, text="Harmonogram seansów (domyślnie 13:00–22:00)").pack(anchor=tk.W)
+        self.seance_list = tk.Text(right, height=8, wrap=tk.WORD, state=tk.DISABLED)
+        self.seance_list.pack(fill=tk.X, pady=(0, 6))
+        self._refresh_seance_text_buffer()
 
-        self.status_box = QTextEdit()
-        self.status_box.setReadOnly(True)
-        right.addWidget(QLabel("Co się dzieje / następne kroki"))
-        right.addWidget(self.status_box)
+        ttk.Label(right, text="Co się dzieje / następne kroki").pack(anchor=tk.W)
+        self.status_box = tk.Text(right, height=14, wrap=tk.WORD, state=tk.DISABLED)
+        self.status_box.pack(fill=tk.BOTH, expand=True)
 
-        layout.addLayout(left, 3)
-        layout.addLayout(right, 2)
-        return w
+    def _build_settings_tab(self, notebook: ttk.Notebook) -> None:
+        outer = ttk.Frame(notebook)
+        notebook.add(outer, text="Ustawienia")
 
-    def _build_settings_tab(self) -> QWidget:
-        scroll = QWidget()
-        outer = QVBoxLayout(scroll)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.configure(yscrollcommand=scroll.set)
 
-        pin_box = QGroupBox("Dostęp do ustawień (PIN)")
-        pin_form = QFormLayout(pin_box)
-        self.pin_input = QLineEdit()
-        self.pin_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.pin_new = QLineEdit()
-        self.pin_new.setEchoMode(QLineEdit.EchoMode.Password)
-        btn_unlock = QPushButton("Odblokuj / ustaw PIN")
-        btn_unlock.clicked.connect(self._on_pin_action)
-        pin_form.addRow("PIN:", self.pin_input)
-        pin_form.addRow("Nowy PIN (gdy pierwszy raz):", self.pin_new)
-        pin_form.addRow(btn_unlock)
-        outer.addWidget(pin_box)
+        inner = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW)
 
-        net = QGroupBox("Sieć")
-        nf = QFormLayout(net)
-        self.ws_alarm = QLineEdit(self._cfg.ws_alarm_url)
-        self.ws_player = QLineEdit(self._cfg.ws_player_url)
-        nf.addRow("WebSocket alarmy:", self.ws_alarm)
-        nf.addRow("WebSocket status playera:", self.ws_player)
-        outer.addWidget(net)
+        def _on_configure(_event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
 
-        times = QGroupBox("Czasy automatyki (minuty)")
-        tf = QFormLayout(times)
-        self.sp_query = QSpinBox()
-        self.sp_query.setRange(0, 180)
-        self.sp_query.setValue(self._cfg.query_ws_minutes)
-        self.sp_ann = QSpinBox()
-        self.sp_ann.setRange(0, 180)
-        self.sp_ann.setValue(self._cfg.announcement_minutes_before)
-        self.sp_resume = QSpinBox()
-        self.sp_resume.setRange(0, 180)
-        self.sp_resume.setValue(self._cfg.resume_minutes_after_start)
-        tf.addRow("Pytanie WS — min przed seansem:", self.sp_query)
-        tf.addRow("Zapowiedź — min przed seansem:", self.sp_ann)
-        tf.addRow("Podgłośnienie po seansie — min po godzinie seansu:", self.sp_resume)
-        outer.addWidget(times)
+        inner.bind("<Configure>", _on_configure)
 
-        fade = QGroupBox("Fade i duck")
-        ff = QFormLayout(fade)
-        self.sp_fo = QSpinBox()
-        self.sp_fo.setRange(500, 120000)
-        self.sp_fo.setSingleStep(500)
-        self.sp_fo.setValue(self._cfg.fade_out_ms)
-        self.sp_fi = QSpinBox()
-        self.sp_fi.setRange(500, 300000)
-        self.sp_fi.setSingleStep(500)
-        self.sp_fi.setValue(self._cfg.fade_in_ms)
-        self.sp_duck_sec = QSpinBox()
-        self.sp_duck_sec.setRange(5, 300)
-        self.sp_duck_sec.setValue(self._cfg.pre_seance_duck_seconds)
-        ff.addRow("Fade-out (ms):", self.sp_fo)
-        ff.addRow("Fade-in (ms):", self.sp_fi)
-        ff.addRow("Okno duck przed seansem (s):", self.sp_duck_sec)
-        outer.addWidget(fade)
+        pin_fr = ttk.LabelFrame(inner, text="Dostęp do ustawień (PIN)")
+        pin_fr.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(pin_fr, text="PIN:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
+        self.pin_input = ttk.Entry(pin_fr, show="*")
+        self.pin_input.grid(row=0, column=1, sticky=tk.EW, padx=4, pady=2)
+        ttk.Label(pin_fr, text="Nowy PIN (pierwszy raz):").grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
+        self.pin_new = ttk.Entry(pin_fr, show="*")
+        self.pin_new.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
+        ttk.Button(pin_fr, text="Odblokuj / ustaw PIN", command=self._on_pin_action).grid(
+            row=2, column=0, columnspan=2, pady=6
+        )
+        pin_fr.columnconfigure(1, weight=1)
 
-        ann = QGroupBox("Pliki zapowiedzi (ścieżki lokalne)")
-        af = QFormLayout(ann)
-        self.path_teatr = QLineEdit(self._cfg.announcement_teatr)
-        self.path_finska = QLineEdit(self._cfg.announcement_finska)
-        self.path_default = QLineEdit(self._cfg.announcement_default)
-        af.addRow("Teatr:", self.path_teatr)
-        af.addRow("Fińska:", self.path_finska)
-        af.addRow("Domyślna:", self.path_default)
-        outer.addWidget(ann)
+        net_fr = ttk.LabelFrame(inner, text="Sieć")
+        net_fr.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(net_fr, text="WebSocket alarmy:").grid(row=0, column=0, sticky=tk.W, padx=4)
+        self.ws_alarm = ttk.Entry(net_fr)
+        self.ws_alarm.insert(0, self._cfg.ws_alarm_url)
+        self.ws_alarm.grid(row=0, column=1, sticky=tk.EW, padx=4, pady=2)
+        ttk.Label(net_fr, text="WebSocket status playera:").grid(row=1, column=0, sticky=tk.W, padx=4)
+        self.ws_player = ttk.Entry(net_fr)
+        self.ws_player.insert(0, self._cfg.ws_player_url)
+        self.ws_player.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
+        net_fr.columnconfigure(1, weight=1)
 
-        btn_save = QPushButton("Zapisz ustawienia")
-        btn_save.clicked.connect(self._save_settings)
-        outer.addWidget(btn_save)
+        time_fr = ttk.LabelFrame(inner, text="Czasy automatyki (minuty)")
+        time_fr.pack(fill=tk.X, padx=4, pady=6)
+        self.sp_query = tk.Spinbox(time_fr, from_=0, to=180, width=8)
+        self.sp_query.delete(0, tk.END)
+        self.sp_query.insert(0, str(self._cfg.query_ws_minutes))
+        self.sp_ann = tk.Spinbox(time_fr, from_=0, to=180, width=8)
+        self.sp_ann.delete(0, tk.END)
+        self.sp_ann.insert(0, str(self._cfg.announcement_minutes_before))
+        self.sp_resume = tk.Spinbox(time_fr, from_=0, to=180, width=8)
+        self.sp_resume.delete(0, tk.END)
+        self.sp_resume.insert(0, str(self._cfg.resume_minutes_after_start))
+        ttk.Label(time_fr, text="Pytanie WS — min przed seansem:").grid(row=0, column=0, sticky=tk.W, padx=4)
+        self.sp_query.grid(row=0, column=1, sticky=tk.W, padx=4)
+        ttk.Label(time_fr, text="Zapowiedź — min przed seansem:").grid(row=1, column=0, sticky=tk.W, padx=4)
+        self.sp_ann.grid(row=1, column=1, sticky=tk.W, padx=4)
+        ttk.Label(time_fr, text="Podgłośnienie po seansie — min po godzinie seansu:").grid(
+            row=2, column=0, sticky=tk.W, padx=4
+        )
+        self.sp_resume.grid(row=2, column=1, sticky=tk.W, padx=4)
 
-        outer.addStretch()
-        self._apply_settings_lock_ui()
-        return scroll
+        fade_fr = ttk.LabelFrame(inner, text="Fade i duck")
+        fade_fr.pack(fill=tk.X, padx=4, pady=6)
+        self.sp_fo = tk.Spinbox(fade_fr, from_=500, to=120000, increment=500, width=10)
+        self.sp_fo.delete(0, tk.END)
+        self.sp_fo.insert(0, str(self._cfg.fade_out_ms))
+        self.sp_fi = tk.Spinbox(fade_fr, from_=500, to=300000, increment=500, width=10)
+        self.sp_fi.delete(0, tk.END)
+        self.sp_fi.insert(0, str(self._cfg.fade_in_ms))
+        self.sp_duck_sec = tk.Spinbox(fade_fr, from_=5, to=300, width=8)
+        self.sp_duck_sec.delete(0, tk.END)
+        self.sp_duck_sec.insert(0, str(self._cfg.pre_seance_duck_seconds))
+        ttk.Label(fade_fr, text="Fade-out (ms):").grid(row=0, column=0, sticky=tk.W, padx=4)
+        self.sp_fo.grid(row=0, column=1, sticky=tk.W, padx=4)
+        ttk.Label(fade_fr, text="Fade-in (ms):").grid(row=1, column=0, sticky=tk.W, padx=4)
+        self.sp_fi.grid(row=1, column=1, sticky=tk.W, padx=4)
+        ttk.Label(fade_fr, text="Okno duck przed seansem (s):").grid(row=2, column=0, sticky=tk.W, padx=4)
+        self.sp_duck_sec.grid(row=2, column=1, sticky=tk.W, padx=4)
 
-    def _build_log_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        lay.addWidget(self.log_view)
-        return w
+        ann_fr = ttk.LabelFrame(inner, text="Pliki zapowiedzi (ścieżki lokalne)")
+        ann_fr.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(ann_fr, text="Teatr:").grid(row=0, column=0, sticky=tk.W, padx=4)
+        self.path_teatr = ttk.Entry(ann_fr)
+        self.path_teatr.insert(0, self._cfg.announcement_teatr)
+        self.path_teatr.grid(row=0, column=1, sticky=tk.EW, padx=4)
+        ttk.Label(ann_fr, text="Fińska:").grid(row=1, column=0, sticky=tk.W, padx=4)
+        self.path_finska = ttk.Entry(ann_fr)
+        self.path_finska.insert(0, self._cfg.announcement_finska)
+        self.path_finska.grid(row=1, column=1, sticky=tk.EW, padx=4)
+        ttk.Label(ann_fr, text="Domyślna:").grid(row=2, column=0, sticky=tk.W, padx=4)
+        self.path_default = ttk.Entry(ann_fr)
+        self.path_default.insert(0, self._cfg.announcement_default)
+        self.path_default.grid(row=2, column=1, sticky=tk.EW, padx=4)
+        ann_fr.columnconfigure(1, weight=1)
 
-    def _apply_settings_lock_ui(self) -> None:
-        locked = not self._settings_unlocked
-        for w in (
+        ttk.Button(inner, text="Zapisz ustawienia", command=self._save_settings).pack(pady=10)
+
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+        self._settings_widgets = (
             self.ws_alarm,
             self.ws_player,
             self.sp_query,
@@ -210,87 +209,133 @@ class MainWindow(QMainWindow):
             self.path_teatr,
             self.path_finska,
             self.path_default,
-        ):
-            w.setEnabled(not locked)
+        )
+        self._apply_settings_lock_ui()
+
+    def _build_log_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook)
+        notebook.add(tab, text="Log")
+        self.log_view = tk.Text(tab, wrap=tk.WORD, state=tk.DISABLED)
+        self.log_view.pack(fill=tk.BOTH, expand=True)
+
+    def _apply_settings_lock_ui(self) -> None:
+        locked = not self._settings_unlocked
+        for w in self._settings_widgets:
+            try:
+                w.configure(state=tk.DISABLED if locked else tk.NORMAL)
+            except tk.TclError:
+                pass
+
+    def _read_spin_int(self, spin: tk.Spinbox, fallback: int) -> int:
+        try:
+            return int(spin.get())
+        except (ValueError, tk.TclError):
+            return fallback
 
     def _on_pin_action(self) -> None:
-        pin = self.pin_input.text()
-        new_pin = self.pin_new.text()
+        pin = self.pin_input.get()
+        new_pin = self.pin_new.get()
         if not self._cfg.pin_hash_hex:
             if len(new_pin) < 4:
-                QMessageBox.warning(self, "PIN", "Ustaw nowy PIN (min. 4 znaki).")
+                messagebox.showwarning("PIN", "Ustaw nowy PIN (min. 4 znaki).")
                 return
             self._cfg.pin_hash_hex = hash_pin(new_pin)
             save_config(self._cfg)
             self._settings_unlocked = True
             self._apply_settings_lock_ui()
             self._log("Ustawiono PIN.")
-            QMessageBox.information(self, "PIN", "PIN ustawiony. Ustawienia odblokowane.")
+            messagebox.showinfo("PIN", "PIN ustawiony. Ustawienia odblokowane.")
             return
         if verify_pin(pin, self._cfg.pin_hash_hex):
             self._settings_unlocked = True
             self._apply_settings_lock_ui()
             self._log("Ustawienia odblokowane.")
         else:
-            QMessageBox.warning(self, "PIN", "Nieprawidłowy PIN.")
+            messagebox.showwarning("PIN", "Nieprawidłowy PIN.")
 
     def _save_settings(self) -> None:
         if not self._settings_unlocked:
-            QMessageBox.warning(self, "PIN", "Najpierw odblokuj ustawienia.")
+            messagebox.showwarning("PIN", "Najpierw odblokuj ustawienia.")
             return
-        self._cfg.ws_alarm_url = self.ws_alarm.text().strip()
-        self._cfg.ws_player_url = self.ws_player.text().strip()
-        self._cfg.query_ws_minutes = self.sp_query.value()
-        self._cfg.announcement_minutes_before = self.sp_ann.value()
-        self._cfg.resume_minutes_after_start = self.sp_resume.value()
-        self._cfg.fade_out_ms = self.sp_fo.value()
-        self._cfg.fade_in_ms = self.sp_fi.value()
-        self._cfg.pre_seance_duck_seconds = self.sp_duck_sec.value()
-        self._cfg.announcement_teatr = self.path_teatr.text().strip()
-        self._cfg.announcement_finska = self.path_finska.text().strip()
-        self._cfg.announcement_default = self.path_default.text().strip()
-        self._cfg.window_width = self.width()
-        self._cfg.window_height = self.height()
+        self._cfg.ws_alarm_url = self.ws_alarm.get().strip()
+        self._cfg.ws_player_url = self.ws_player.get().strip()
+        self._cfg.query_ws_minutes = self._read_spin_int(self.sp_query, self._cfg.query_ws_minutes)
+        self._cfg.announcement_minutes_before = self._read_spin_int(
+            self.sp_ann, self._cfg.announcement_minutes_before
+        )
+        self._cfg.resume_minutes_after_start = self._read_spin_int(
+            self.sp_resume, self._cfg.resume_minutes_after_start
+        )
+        self._cfg.fade_out_ms = self._read_spin_int(self.sp_fo, self._cfg.fade_out_ms)
+        self._cfg.fade_in_ms = self._read_spin_int(self.sp_fi, self._cfg.fade_in_ms)
+        self._cfg.pre_seance_duck_seconds = self._read_spin_int(
+            self.sp_duck_sec, self._cfg.pre_seance_duck_seconds
+        )
+        self._cfg.announcement_teatr = self.path_teatr.get().strip()
+        self._cfg.announcement_finska = self.path_finska.get().strip()
+        self._cfg.announcement_default = self.path_default.get().strip()
+        self._cfg.window_width = self.root.winfo_width()
+        self._cfg.window_height = self.root.winfo_height()
         save_config(self._cfg)
-        self._refresh_seance_text()
+        self._refresh_seance_text_buffer()
         self._log("Zapisano config.json.")
-        QMessageBox.information(self, "Zapis", "Zapisano ustawienia.")
+        messagebox.showinfo("Zapis", "Zapisano ustawienia.")
 
     def _fill_playlist_from_config(self) -> None:
-        self.playlist.clear()
+        self.playlist.delete(0, tk.END)
         for item in self._cfg.yt_playlist:
             title = item.get("title", "—")
-            self.playlist.addItem(title)
+            self.playlist.insert(tk.END, title)
 
-    def _refresh_seance_text(self) -> None:
+    def _refresh_seance_text_buffer(self) -> None:
         lines = []
         for s in self._slots:
             if not s.enabled:
                 continue
             lines.append(f"{s.hour:02d}:{s.minute:02d}  ({s.mode})")
-        self.seance_list.setPlainText("\n".join(lines) if lines else "(brak)")
+        text = "\n".join(lines) if lines else "(brak)"
+        self.seance_list.configure(state=tk.NORMAL)
+        self.seance_list.delete("1.0", tk.END)
+        self.seance_list.insert("1.0", text)
+        self.seance_list.configure(state=tk.DISABLED)
+
+    def _refresh_status_loop(self) -> None:
+        self._refresh_status()
+        self.root.after(1000, self._refresh_status_loop)
 
     def _refresh_status(self) -> None:
-        self.status_box.setPlainText(self._schedule.next_events_description())
+        body = self._schedule.next_events_description()
+        self.status_box.configure(state=tk.NORMAL)
+        self.status_box.delete("1.0", tk.END)
+        self.status_box.insert("1.0", body)
+        self.status_box.configure(state=tk.DISABLED)
 
     def _tick_transport(self) -> None:
+        if self._player.available() and not self._slider_sync:
+            pos = self._player.get_position()
+            self.var_pos.set(int(pos * 1000))
+            vol = self._player.get_volume()
+            self.var_vol.set(vol)
+        self.root.after(400, self._tick_transport)
+
+    def _on_seek_scale(self, _val: str) -> None:
         if not self._player.available():
             return
-        pos = self._player.get_position()
-        self.slider_pos.blockSignals(True)
-        self.slider_pos.setValue(int(pos * 1000))
-        self.slider_pos.blockSignals(False)
-        vol = self._player.get_volume()
-        self.slider_vol.blockSignals(True)
-        self.slider_vol.setValue(vol)
-        self.slider_vol.blockSignals(False)
+        self._slider_sync = True
+        try:
+            self._player.set_position(self.var_pos.get() / 1000.0)
+        finally:
+            self.root.after(120, lambda: setattr(self, "_slider_sync", False))
+
+    def _on_volume_scale(self, _val: str) -> None:
+        self._player.set_volume(int(float(self.var_vol.get())))
 
     def _on_play(self) -> None:
-        item = self.playlist.currentItem()
-        if not item:
+        sel = self.playlist.curselection()
+        if not sel:
             self._log("Wybierz pozycję na liście.")
             return
-        idx = self.playlist.row(item)
+        idx = sel[0]
         entry = self._cfg.yt_playlist[idx] if idx < len(self._cfg.yt_playlist) else {}
         url = (entry.get("url") or "").strip()
         if url.startswith("http"):
@@ -303,11 +348,8 @@ class MainWindow(QMainWindow):
     def _on_pause(self) -> None:
         self._player.pause()
 
-    def _on_seek(self, v: int) -> None:
-        self._player.set_position(v / 1000.0)
-
-    def _on_volume(self, v: int) -> None:
-        self._player.set_volume(v)
-
     def _log(self, msg: str) -> None:
-        self.log_view.append(msg)
+        self.log_view.configure(state=tk.NORMAL)
+        self.log_view.insert(tk.END, msg + "\n")
+        self.log_view.see(tk.END)
+        self.log_view.configure(state=tk.DISABLED)

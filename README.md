@@ -6,6 +6,7 @@ Desktopowy odtwarzacz audio z harmonogramem seansów, fade i WebSocket — **bez
 
 - Python 3.11+
 - Linux: zainstalowany **VLC** (`vlc`, biblioteki `libvlc`)
+- Interfejs: **Tkinter** (standardowa biblioteka) — działa na **Raspberry Pi** bez PySide6.
 
 ```bash
 sudo apt install vlc libvlc-dev   # Debian/Ubuntu — nazwy mogą się różnić
@@ -18,6 +19,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Na Raspberry Pi **nie instaluj PySide6** — nie ma stabilnych kół ARM na PyPI; aplikacja używa Tkintera.
 
 ## Uruchomienie
 
