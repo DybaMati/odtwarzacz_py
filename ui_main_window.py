@@ -433,28 +433,27 @@ class MainApp:
                 dlg.destroy()
                 return
 
-            btn_ok.configure(state=tk.DISABLED)
-            status_lbl.configure(text="Automatyczne pobieranie tytułu…")
+            # Dodaj od razu (bez czekania), a tytuł pobierz i podmień w tle.
+            placeholder = "Pobieranie tytułu..."
+            self._append_playlist_item(u, placeholder)
+            new_idx = len(self._playlist_data) - 1
+            self._log("Dodano od razu; tytuł zostanie uzupełniony w tle.")
+            dlg.destroy()
 
             def worker() -> None:
                 title, err = fetch_title(u)
 
                 def done() -> None:
-                    btn_ok.configure(state=tk.NORMAL)
-                    status_lbl.configure(text="")
-                    if title:
-                        self._append_playlist_item(u, title)
-                        dlg.destroy()
+                    if new_idx >= len(self._playlist_data):
                         return
-                    msg = err or "brak tytułu"
-                    if messagebox.askyesno(
-                        "Tytuł",
-                        f"Nie udało się ustawić tytułu automatycznie:\n{msg}\n\n"
-                        "Dodać pozycję jako „Bez tytułu”?",
-                        parent=dlg,
-                    ):
-                        self._append_playlist_item(u, "Bez tytułu")
-                        dlg.destroy()
+                    if title:
+                        self._playlist_data[new_idx]["title"] = title
+                        self._refresh_playlist_listbox()
+                        self._log(f"Tytuł uzupełniony: {title[:72]}")
+                    else:
+                        self._playlist_data[new_idx]["title"] = "Bez tytułu"
+                        self._refresh_playlist_listbox()
+                        self._log(f"Tytuł: nie udało się pobrać ({(err or 'brak')[:120]})")
 
                 self.root.after(0, done)
 
