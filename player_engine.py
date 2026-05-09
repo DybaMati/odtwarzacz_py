@@ -69,15 +69,19 @@ class PlayerEngine:
     def available(self) -> bool:
         return self._player is not None
 
-    def load_file(self, path: str) -> None:
+    def load_file(self, path: str) -> tuple[bool, str | None]:
         if not self._player or not self._instance:
-            return
+            return False, self._init_error or "Brak VLC"
         p = Path(path)
         if not p.is_file():
-            return
-        self._media_path = str(p)
-        media = self._instance.media_new_path(self._media_path)
-        self._player.set_media(media)
+            return False, f"Plik nie istnieje: {path}"
+        try:
+            self._media_path = str(p)
+            media = self._instance.media_new_path(self._media_path)
+            self._player.set_media(media)
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
     def load_stream_url(self, stream_url: str) -> tuple[bool, str | None]:
         """Ustawia media z gotowego URL strumienia (wywołać z wątku głównego GUI)."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import sys
 import threading
 import tkinter as tk
@@ -46,6 +47,7 @@ class MainApp:
         self._dbg_label = ""
         self._last_status_body = ""
         self._last_countdown_text = ""
+        self._ann_fired_keys: set[str] = set()
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -790,9 +792,64 @@ class MainApp:
         # Czytaj bieżące wartości z UI seansów, żeby status i odliczanie
         # reagowały natychmiast po zmianie godzin/trybu.
         self._read_slots_from_ui()
+        self._check_and_trigger_announcements()
         self._refresh_status()
         self._update_active_countdown()
         self.root.after(1500, self._refresh_status_loop)
+
+    def _check_and_trigger_announcements(self) -> None:
+        """Automatyczny start zapowiedzi X min przed seansem."""
+        now = dt.datetime.now()
+        day_key = now.strftime("%Y-%m-%d")
+        now_s = now.hour * 3600 + now.minute * 60 + now.second
+        pre_min = max(0, int(self._cfg.announcement_minutes_before))
+
+        # Ogranicz pamięć kluczy do bieżącego dnia.
+        self._ann_fired_keys = {k for k in self._ann_fired_keys if k.startswith(day_key + "|")}
+
+        for s in self._slots:
+            if not s.enabled:
+                continue
+            seans_s = s.hour * 3600 + s.minute * 60
+            trigger_s = seans_s - pre_min * 60
+            if trigger_s < 0:
+                trigger_s += 24 * 3600
+            # okno 4s, żeby nie minąć triggera przy timerze co 1.5s
+            in_window = now_s >= trigger_s and now_s < (trigger_s + 4)
+            key = f"{day_key}|{s.hour:02d}:{s.minute:02d}|{s.mode}"
+            if not in_window or key in self._ann_fired_keys:
+                continue
+
+            mode = s.mode if s.mode in ("teatr", "finska") else "teatr"
+            path = (self._cfg.announcement_teatr if mode == "teatr" else self._cfg.announcement_finska).strip()
+            if not path:
+                self._ann_fired_keys.add(key)
+                self._log(
+                    f"Zapowiedź {mode} dla seansu {s.hour:02d}:{s.minute:02d} pominięta: "
+                    "brak ścieżki pliku w Ustawieniach."
+                )
+                continue
+            if not self._player.available():
+                self._ann_fired_keys.add(key)
+                self._log("Zapowiedź pominięta: brak VLC.")
+                continue
+
+            ok_load, err_load = self._player.load_file(path)
+            if not ok_load:
+                self._ann_fired_keys.add(key)
+                self._log(
+                    f"Zapowiedź {mode} {s.hour:02d}:{s.minute:02d} błąd ładowania: {err_load}"
+                )
+                continue
+            ok_play, err_play = self._player.play()
+            self._ann_fired_keys.add(key)
+            if not ok_play:
+                self._log(f"Zapowiedź {mode} {s.hour:02d}:{s.minute:02d} play() błąd: {err_play}")
+            else:
+                self._log(
+                    f"START zapowiedzi {mode} dla seansu {s.hour:02d}:{s.minute:02d} "
+                    f"({pre_min} min przed)."
+                )
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()
