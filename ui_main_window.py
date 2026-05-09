@@ -782,7 +782,12 @@ class MainApp:
         self._log(f"Szukam strumienia dla: {label}… (nie blokuje okna)")
 
         def worker() -> None:
-            stream, err = get_audio_stream_url(url)
+            stream: str | None = None
+            err: str | None = None
+            try:
+                stream, err = get_audio_stream_url(url)
+            except Exception as e:
+                err = f"Wyjątek podczas pobierania strumienia: {e}"
 
             def finish() -> None:
                 self._play_busy = False
