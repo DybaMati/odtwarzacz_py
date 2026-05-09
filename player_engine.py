@@ -86,6 +86,11 @@ class PlayerEngine:
         try:
             self._media_path = stream_url
             media = self._instance.media_new(stream_url)
+            # Ustawienia pomocne dla strumieni YouTube/googlevideo na RPi.
+            media.add_option(":network-caching=3000")
+            media.add_option(":http-reconnect=true")
+            media.add_option(":http-user-agent=Mozilla/5.0")
+            media.add_option(":http-referrer=https://www.youtube.com/")
             self._player.set_media(media)
             return True, None
         except Exception as e:
@@ -136,6 +141,22 @@ class PlayerEngine:
         if self._player:
             return float(self._player.get_position())
         return 0.0
+
+    def get_time_ms(self) -> int:
+        if self._player:
+            try:
+                return int(self._player.get_time())
+            except Exception:
+                return -1
+        return -1
+
+    def get_length_ms(self) -> int:
+        if self._player:
+            try:
+                return int(self._player.get_length())
+            except Exception:
+                return -1
+        return -1
 
     def debug_state(self) -> str:
         if not self._player:

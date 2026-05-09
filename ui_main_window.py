@@ -134,6 +134,8 @@ class MainApp:
             command=self._on_seek_scale,
         )
         self.scale_pos.pack(fill=tk.X)
+        self.lbl_time = ttk.Label(left, text="Czas: 00:00 / --:--")
+        self.lbl_time.pack(anchor=tk.W, pady=(2, 4))
 
         ttk.Label(left, text="Głośność").pack(anchor=tk.W, pady=(8, 0))
         self.var_vol = tk.IntVar(value=70)
@@ -765,7 +767,23 @@ class MainApp:
             self.var_pos.set(int(pos * 1000))
             vol = self._player.get_volume()
             self.var_vol.set(vol)
+            cur_ms = self._player.get_time_ms()
+            len_ms = self._player.get_length_ms()
+            self.lbl_time.configure(
+                text=f"Czas: {self._fmt_ms(cur_ms)} / {self._fmt_ms(len_ms)}"
+            )
         self.root.after(400, self._tick_transport)
+
+    def _fmt_ms(self, ms: int) -> str:
+        if ms is None or ms < 0:
+            return "--:--"
+        sec = ms // 1000
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        s = sec % 60
+        if h > 0:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
 
     def _on_seek_scale(self, _val: str) -> None:
         if not self._player.available():
