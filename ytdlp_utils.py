@@ -37,7 +37,7 @@ def _title_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
             [cli, "--dump-json", "--skip-download", "--no-warnings", page_url],
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=28,
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -61,7 +61,7 @@ def _stream_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
                 [cli, "--no-warnings", "--get-url", "-f", fmt, page_url],
                 capture_output=True,
                 text=True,
-                timeout=50,
+                timeout=35,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -92,7 +92,7 @@ def fetch_title(url: str) -> tuple[str | None, str | None]:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": False,
-            "socket_timeout": 20,
+            "socket_timeout": 18,
         }
         try:
             with YoutubeDL(opts) as ydl:
@@ -161,7 +161,7 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
     base_opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 35,
+        "socket_timeout": 28,
     }
     for fmt in format_candidates:
         opts = dict(base_opts)

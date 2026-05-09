@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -10,7 +11,7 @@ from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
-from ytdlp_utils import fetch_title, ytdlp_available
+from ytdlp_utils import fetch_title, get_audio_stream_url, ytdlp_available
 
 MODE_DISPLAY_TO_VALUE = {"Domyślna": "default", "Teatr": "teatr", "Fińska": "finska"}
 VALUE_TO_DISPLAY = {v: k for k, v in MODE_DISPLAY_TO_VALUE.items()}
@@ -29,6 +30,7 @@ class MainApp:
         self._slider_sync = False
         self._seance_row_refs: list[dict] = []
         self._last_geom_label = ""
+        self._play_busy = False
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -47,7 +49,8 @@ class MainApp:
         ok_yt, yt_desc = ytdlp_available()
         self._log(f"yt-dlp: {'OK — ' + yt_desc if ok_yt else 'BRAK — zainstaluj pip yt-dlp lub apt yt-dlp'}")
         if not self._player.available():
-            self._log("Ostrzeżenie: brak python-vlc / libvlc — transport będzie pusty.")
+            vlc_msg = self._player.init_error() or "Brak VLC (python-vlc / libvlc)."
+            self._log(vlc_msg)
 
         root.after(400, self._tick_transport)
         root.after(1000, self._refresh_status_loop)
@@ -96,6 +99,7 @@ class MainApp:
 
         self.playlist = tk.Listbox(pl_fr, height=8, exportselection=False)
         self.playlist.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+        self.playlist.bind("<Double-Button-1>", lambda _e: self._on_play())
         self._refresh_playlist_listbox()
 
         transport = ttk.Frame(left)
@@ -260,6 +264,11 @@ class MainApp:
             short = url if len(url) <= 42 else url[:39] + "…"
             self.playlist.insert(tk.END, f"{title}  |  {short}")
 
+    def _append_playlist_item(self, url: str, title: str) -> None:
+        self._playlist_data.append({"title": title, "url": url})
+        self._refresh_playlist_listbox()
+        self._log(f"Dodano do listy: {title}")
+
     def _show_add_playlist_dialog(self) -> None:
         dlg = tk.Toplevel(self.root)
         dlg.title("Dodaj utwór do playlisty")
@@ -278,29 +287,49 @@ class MainApp:
         e_title = ttk.Entry(f, width=58)
         e_title.grid(row=3, column=0, sticky=tk.EW, pady=(0, 8))
 
+        status_lbl = ttk.Label(f, text="", foreground="#666")
+        status_lbl.grid(row=5, column=0, sticky=tk.W, pady=(0, 4))
+
+        btn_fetch = ttk.Button(f)
+
         def do_fetch_title() -> None:
             u = e_url.get().strip()
             if not u.startswith("http"):
                 messagebox.showwarning("URL", "Podaj najpierw poprawny adres https://…", parent=dlg)
                 return
-            self._log("Pobieranie tytułu z sieci…")
-            dlg.update_idletasks()
-            title, err = fetch_title(u)
-            if err:
-                messagebox.showerror("Tytuł", err, parent=dlg)
-                self._log(f"Tytuł: błąd — {err}")
-                return
-            if title:
-                e_title.delete(0, tk.END)
-                e_title.insert(0, title)
-                self._log(f"Tytuł: {title[:70]}…")
+            self._log("Pobieranie tytułu (w tle, okno się nie zamraża)…")
+            status_lbl.configure(text="Pobieranie tytułu…")
+            btn_fetch.configure(state=tk.DISABLED)
 
-        ttk.Button(f, text="Pobierz tytuł z internetu", command=do_fetch_title).grid(
-            row=4, column=0, sticky=tk.W, pady=(0, 14)
-        )
+            def worker() -> None:
+                title, err = fetch_title(u)
+
+                def done() -> None:
+                    btn_fetch.configure(state=tk.NORMAL)
+                    if err:
+                        status_lbl.configure(text="")
+                        messagebox.showerror("Tytuł", err, parent=dlg)
+                        self._log(f"Tytuł: błąd — {err[:120]}")
+                    elif title:
+                        e_title.delete(0, tk.END)
+                        e_title.insert(0, title)
+                        status_lbl.configure(text="")
+                        disp = title if len(title) <= 72 else title[:69] + "…"
+                        self._log(f"Tytuł: {disp}")
+                    else:
+                        status_lbl.configure(text="")
+
+                self.root.after(0, done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_fetch.configure(text="Pobierz tytuł z internetu", command=do_fetch_title)
+        btn_fetch.grid(row=4, column=0, sticky=tk.W, pady=(0, 4))
 
         btn_fr = ttk.Frame(f)
-        btn_fr.grid(row=5, column=0, sticky=tk.EW)
+        btn_fr.grid(row=6, column=0, sticky=tk.EW)
+
+        btn_ok = ttk.Button(btn_fr)
 
         def on_ok() -> None:
             u = e_url.get().strip()
@@ -308,9 +337,24 @@ class MainApp:
                 messagebox.showwarning("URL", "Podaj pełny URL (https://…)", parent=dlg)
                 return
             t = e_title.get().strip()
-            if not t:
+            if t:
+                self._append_playlist_item(u, t)
+                dlg.destroy()
+                return
+
+            btn_ok.configure(state=tk.DISABLED)
+            status_lbl.configure(text="Automatyczne pobieranie tytułu…")
+
+            def worker() -> None:
                 title, err = fetch_title(u)
-                if err or not title:
+
+                def done() -> None:
+                    btn_ok.configure(state=tk.NORMAL)
+                    status_lbl.configure(text="")
+                    if title:
+                        self._append_playlist_item(u, title)
+                        dlg.destroy()
+                        return
                     msg = err or "brak tytułu"
                     if messagebox.askyesno(
                         "Tytuł",
@@ -318,17 +362,15 @@ class MainApp:
                         "Dodać pozycję jako „Bez tytułu”?",
                         parent=dlg,
                     ):
-                        t = "Bez tytułu"
-                    else:
-                        return
-                else:
-                    t = title
-            self._playlist_data.append({"title": t, "url": u})
-            self._refresh_playlist_listbox()
-            self._log(f"Dodano do listy: {t}")
-            dlg.destroy()
+                        self._append_playlist_item(u, "Bez tytułu")
+                        dlg.destroy()
 
-        ttk.Button(btn_fr, text="OK", command=on_ok).pack(side=tk.LEFT, padx=(0, 8))
+                self.root.after(0, done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_ok.configure(text="OK", command=on_ok)
+        btn_ok.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_fr, text="Anuluj", command=dlg.destroy).pack(side=tk.LEFT)
 
         f.columnconfigure(0, weight=1)
@@ -595,10 +637,13 @@ class MainApp:
     def _on_volume_scale(self, _val: str) -> None:
         self._player.set_volume(int(float(self.var_vol.get())))
 
-    def _on_play(self) -> None:
+    def _on_play(self, _event: tk.Event | None = None) -> None:
+        if self._play_busy:
+            self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
+            return
         sel = self.playlist.curselection()
         if not sel:
-            self._log("Wybierz pozycję na liście.")
+            self._log("Wybierz pozycję na liście (lub kliknij dwukrotnie).")
             return
         idx = sel[0]
         entry = self._playlist_data[idx] if idx < len(self._playlist_data) else {}
@@ -606,15 +651,39 @@ class MainApp:
         if not url.startswith("http"):
             self._log("Brak URL — dodaj wpis z https://")
             return
-        self._log("Przygotowanie odtwarzania (YouTube → yt-dlp)…")
-        self.root.update_idletasks()
-        ok, err = self._player.load_url(url)
-        if not ok:
-            self._log(f"Błąd odtwarzania: {err}")
-            messagebox.showerror("Odtwarzacz", err or "Nie udało się załadować URL.")
+        if not self._player.available():
+            msg = self._player.init_error() or "Brak VLC."
+            self._log(msg)
+            messagebox.showerror("Brak VLC", msg)
             return
-        self._player.play()
-        self._log(f"Odtwarzanie: {(entry.get('title') or url)[:60]}…")
+
+        label = (entry.get("title") or url)[:80]
+        self._play_busy = True
+        self._log(f"Szukam strumienia dla: {label}… (nie blokuje okna)")
+
+        def worker() -> None:
+            stream, err = get_audio_stream_url(url)
+
+            def finish() -> None:
+                self._play_busy = False
+                if not stream:
+                    self._log(f"Błąd strumienia: {err or 'nieznany'}")
+                    messagebox.showerror(
+                        "Odtwarzacz",
+                        err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?).",
+                    )
+                    return
+                ok_play, err2 = self._player.load_stream_url(stream)
+                if not ok_play:
+                    self._log(f"VLC nie załadował strumienia: {err2}")
+                    messagebox.showerror("VLC", err2 or "Błąd odtwarzacza")
+                    return
+                self._player.play()
+                self._log(f"Odtwarzanie: {label}")
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_pause(self) -> None:
         self._player.pause()
