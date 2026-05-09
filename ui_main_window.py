@@ -44,6 +44,8 @@ class MainApp:
         self._dbg_play_cmd_ms = 0
         self._dbg_first_sec_logged = False
         self._dbg_label = ""
+        self._last_status_body = ""
+        self._last_countdown_text = ""
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -68,8 +70,8 @@ class MainApp:
             for line in install_hints_text().splitlines():
                 self._log(line)
 
-        root.after(400, self._tick_transport)
-        root.after(1000, self._refresh_status_loop)
+        root.after(900, self._tick_transport)
+        root.after(1500, self._refresh_status_loop)
         root.bind("<Configure>", self._on_root_configure)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._update_active_countdown()
@@ -288,18 +290,22 @@ class MainApp:
                 nearest_delta = d
                 nearest = s
         if nearest is None:
-            self.lbl_countdown.configure(text="Aktywne odliczanie: brak kolejnych seansów")
+            txt = "Aktywne odliczanie: brak kolejnych seansów"
+            if txt != self._last_countdown_text:
+                self._last_countdown_text = txt
+                self.lbl_countdown.configure(text=txt)
             return
         hh = nearest_delta // 3600
         mm = (nearest_delta % 3600) // 60
         ss = nearest_delta % 60
         mode_txt = "Teatr" if nearest.mode == "teatr" else "Fińska"
-        self.lbl_countdown.configure(
-            text=(
-                f"Aktywne odliczanie: {nearest.hour:02d}:{nearest.minute:02d} "
-                f"[{mode_txt}] za {hh:02d}:{mm:02d}:{ss:02d}"
-            )
+        txt = (
+            f"Aktywne odliczanie: {nearest.hour:02d}:{nearest.minute:02d} "
+            f"[{mode_txt}] za {hh:02d}:{mm:02d}:{ss:02d}"
         )
+        if txt != self._last_countdown_text:
+            self._last_countdown_text = txt
+            self.lbl_countdown.configure(text=txt)
 
     def _rebuild_seance_rows(self, canvas: tk.Canvas | None = None) -> None:
         cv = canvas or getattr(self, "_seance_canvas", None)
@@ -786,13 +792,16 @@ class MainApp:
         self._read_slots_from_ui()
         self._refresh_status()
         self._update_active_countdown()
-        self.root.after(1000, self._refresh_status_loop)
+        self.root.after(1500, self._refresh_status_loop)
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()
-        self._set_notes_text(self.status_box, body)
+        if body != self._last_status_body:
+            self._last_status_body = body
+            self._set_notes_text(self.status_box, body)
 
     def _tick_transport(self) -> None:
+        next_ms = 1200
         if self._player.available() and not self._slider_sync:
             pos = self._player.get_position()
             self.var_pos.set(int(pos * 1000))
@@ -803,6 +812,8 @@ class MainApp:
             self.lbl_time.configure(
                 text=f"Czas: {self._fmt_ms(cur_ms)} / {self._fmt_ms(len_ms)}"
             )
+            if self._player.is_playing():
+                next_ms = 500
             if (
                 not self._dbg_first_sec_logged
                 and self._dbg_req_ms > 0
@@ -821,7 +832,7 @@ class MainApp:
                     f"1s_audio_po_play={after_play}ms, total_do_1s={total}ms "
                     f"[{self._dbg_label[:48]}]"
                 )
-        self.root.after(400, self._tick_transport)
+        self.root.after(next_ms, self._tick_transport)
 
     def _fmt_ms(self, ms: int) -> str:
         if ms is None or ms < 0:

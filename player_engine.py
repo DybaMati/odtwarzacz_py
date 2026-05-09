@@ -142,6 +142,14 @@ class PlayerEngine:
             return float(self._player.get_position())
         return 0.0
 
+    def is_playing(self) -> bool:
+        if not self._player:
+            return False
+        try:
+            return bool(self._player.is_playing())
+        except Exception:
+            return False
+
     def get_time_ms(self) -> int:
         if self._player:
             try:

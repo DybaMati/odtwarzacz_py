@@ -76,7 +76,13 @@ def _title_via_cli_json(cli: str, page_url: str) -> tuple[str | None, str | None
 
 def _stream_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
     last_stderr = ""
-    for fmt in ("bestaudio/best", "bestaudio", "best", "18"):
+    # Preferuj lżejsze audio-only formaty (mniejszy CPU na Raspberry Pi).
+    for fmt in (
+        "140/139",
+        "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]",
+        "bestaudio[abr<=96]/bestaudio",
+        "18",
+    ):
         try:
             r = subprocess.run(
                 [cli, "--no-warnings", "--no-playlist", "--get-url", "-f", fmt, page_url],
@@ -213,10 +219,9 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
         return None, INSTALL_YT_DLP_MSG
 
     format_candidates = (
-        "bestaudio/best",
-        "bestaudio",
-        "ba/bestaudio/best",
-        "best",
+        "140/139",
+        "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]",
+        "bestaudio[abr<=96]/bestaudio",
         "18",
     )
     last_err: str | None = None
