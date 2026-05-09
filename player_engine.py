@@ -1,9 +1,11 @@
-"""Silnik audio VLC — szkielet (pełna integracja yt-dlp w kolejnej iteracji)."""
+"""Silnik audio VLC + rozwiązywanie URL YouTube przez yt-dlp."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
+
+from ytdlp_utils import get_audio_stream_url
 
 try:
     import vlc  # type: ignore
@@ -31,13 +33,20 @@ class PlayerEngine:
         media = self._instance.media_new_path(self._media_path)
         self._player.set_media(media)
 
-    def load_url(self, url: str) -> None:
-        """Na razie bezpośredni URL; stream YT dodamy przez yt-dlp."""
+    def load_url(self, url: str) -> tuple[bool, str | None]:
+        """
+        Ładuje media. Dla YouTube wyciąga strumień przez yt-dlp.
+        Zwraca (sukces, komunikat_błędu).
+        """
         if not self._player or not self._instance:
-            return
-        self._media_path = url
-        media = self._instance.media_new(url)
+            return False, "Brak VLC"
+        stream, err = get_audio_stream_url(url)
+        if not stream:
+            return False, err or "Nieznany błąd URL"
+        self._media_path = stream
+        media = self._instance.media_new(stream)
         self._player.set_media(media)
+        return True, None
 
     def play(self) -> None:
         if self._player:

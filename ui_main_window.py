@@ -10,6 +10,11 @@ from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
+from ytdlp_utils import fetch_title
+
+MODE_DISPLAY_TO_VALUE = {"Domyślna": "default", "Teatr": "teatr", "Fińska": "finska"}
+VALUE_TO_DISPLAY = {v: k for k, v in MODE_DISPLAY_TO_VALUE.items()}
+MODE_COMBO_VALUES = ("Domyślna", "Teatr", "Fińska")
 
 
 class MainApp:
@@ -23,6 +28,7 @@ class MainApp:
         self._settings_unlocked = not bool(self._cfg.pin_hash_hex)
         self._slider_sync = False
         self._seance_row_refs: list[dict] = []
+        self._last_geom_label = ""
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -43,6 +49,22 @@ class MainApp:
 
         root.after(400, self._tick_transport)
         root.after(1000, self._refresh_status_loop)
+        root.bind("<Configure>", self._on_root_configure)
+
+    def _on_root_configure(self, _event: tk.Event) -> None:
+        if not hasattr(self, "lbl_win_current"):
+            return
+        try:
+            w, h = self.root.winfo_width(), self.root.winfo_height()
+            if w < 10 or h < 10:
+                return
+            g = f"{w} × {h}"
+            if g == self._last_geom_label:
+                return
+            self._last_geom_label = g
+            self.lbl_win_current.configure(text=f"Aktualny rozmiar okna: {g} px")
+        except tk.TclError:
+            pass
 
     def _build_player_tab(self, notebook: ttk.Notebook) -> None:
         tab = ttk.Frame(notebook)
@@ -57,23 +79,12 @@ class MainApp:
         pan.add(right, weight=2)
 
         # —— Playlist ——
-        pl_fr = ttk.LabelFrame(left, text="Playlista (YouTube — URL)")
+        pl_fr = ttk.LabelFrame(left, text="Playlista (YouTube / URL audio)")
         pl_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
-
-        row_add = ttk.Frame(pl_fr)
-        row_add.pack(fill=tk.X, padx=4, pady=4)
-        ttk.Label(row_add, text="Tytuł:").pack(side=tk.LEFT)
-        self.entry_pl_title = ttk.Entry(row_add, width=24)
-        self.entry_pl_title.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
-        row_add2 = ttk.Frame(pl_fr)
-        row_add2.pack(fill=tk.X, padx=4, pady=(0, 4))
-        ttk.Label(row_add2, text="URL:").pack(side=tk.LEFT)
-        self.entry_pl_url = ttk.Entry(row_add2)
-        self.entry_pl_url.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
 
         row_btns = ttk.Frame(pl_fr)
         row_btns.pack(fill=tk.X, padx=4, pady=4)
-        ttk.Button(row_btns, text="Dodaj do listy", command=self._playlist_add).pack(
+        ttk.Button(row_btns, text="Dodaj utwór…", command=self._show_add_playlist_dialog).pack(
             side=tk.LEFT, padx=(0, 6)
         )
         ttk.Button(row_btns, text="Usuń zaznaczone", command=self._playlist_remove).pack(
@@ -179,19 +190,26 @@ class MainApp:
             sm.insert(0, str(slot.minute))
             sm.pack(side=tk.LEFT, padx=2)
 
-            mv = tk.StringVar(value=slot.mode if slot.mode in ("teatr", "finska", "default") else "default")
-            rf = ttk.Frame(fr)
-            rf.pack(side=tk.LEFT, padx=8)
-            ttk.Radiobutton(rf, text="Teatr", variable=mv, value="teatr").pack(side=tk.LEFT, padx=2)
-            ttk.Radiobutton(rf, text="Fińska", variable=mv, value="finska").pack(side=tk.LEFT, padx=2)
-            ttk.Radiobutton(rf, text="Domyśl.", variable=mv, value="default").pack(side=tk.LEFT, padx=2)
+            disp = VALUE_TO_DISPLAY.get(
+                slot.mode if slot.mode in ("teatr", "finska", "default") else "default", "Domyślna"
+            )
+            mode_cb = ttk.Combobox(
+                fr,
+                values=MODE_COMBO_VALUES,
+                state="readonly",
+                width=11,
+                justify=tk.CENTER,
+            )
+            mode_cb.set(disp)
+            ttk.Label(fr, text="Tryb:").pack(side=tk.LEFT, padx=(4, 2))
+            mode_cb.pack(side=tk.LEFT, padx=2)
 
             ttk.Button(fr, text="✕", width=3, command=lambda i=idx: self._seance_remove(i)).pack(
                 side=tk.RIGHT, padx=4
             )
 
             self._seance_row_refs.append(
-                {"var_en": ven, "spin_h": sh, "spin_m": sm, "mode_var": mv, "idx": idx}
+                {"var_en": ven, "spin_h": sh, "spin_m": sm, "mode_cb": mode_cb, "idx": idx}
             )
 
         if cv:
@@ -210,8 +228,8 @@ class MainApp:
                 s.minute = max(0, min(59, int(row["spin_m"].get())))
             except (ValueError, tk.TclError):
                 pass
-            m = row["mode_var"].get()
-            s.mode = m if m in ("teatr", "finska", "default") else "default"
+            disp = row["mode_cb"].get()
+            s.mode = MODE_DISPLAY_TO_VALUE.get(disp, "default")
 
     def _seance_add(self) -> None:
         self._read_slots_from_ui()
@@ -240,16 +258,80 @@ class MainApp:
             short = url if len(url) <= 42 else url[:39] + "…"
             self.playlist.insert(tk.END, f"{title}  |  {short}")
 
-    def _playlist_add(self) -> None:
-        title = self.entry_pl_title.get().strip() or "Bez tytułu"
-        url = self.entry_pl_url.get().strip()
-        if not url.startswith("http"):
-            messagebox.showwarning("Playlista", "Podaj pełny URL (https://…)")
-            return
-        self._playlist_data.append({"title": title, "url": url})
-        self.entry_pl_title.delete(0, tk.END)
-        self.entry_pl_url.delete(0, tk.END)
-        self._refresh_playlist_listbox()
+    def _show_add_playlist_dialog(self) -> None:
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Dodaj utwór do playlisty")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(True, False)
+
+        f = ttk.Frame(dlg, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(f, text="URL (najpierw — YouTube lub bezpośredni link):").grid(row=0, column=0, sticky=tk.W)
+        e_url = ttk.Entry(f, width=58)
+        e_url.grid(row=1, column=0, sticky=tk.EW, pady=(0, 10))
+
+        ttk.Label(f, text="Tytuł (opcjonalnie — zostaw puste, użyj „Pobierz tytuł”):").grid(row=2, column=0, sticky=tk.W)
+        e_title = ttk.Entry(f, width=58)
+        e_title.grid(row=3, column=0, sticky=tk.EW, pady=(0, 8))
+
+        def do_fetch_title() -> None:
+            u = e_url.get().strip()
+            if not u.startswith("http"):
+                messagebox.showwarning("URL", "Podaj najpierw poprawny adres https://…", parent=dlg)
+                return
+            self._log("Pobieranie tytułu z sieci…")
+            dlg.update_idletasks()
+            title, err = fetch_title(u)
+            if err:
+                messagebox.showerror("Tytuł", err, parent=dlg)
+                self._log(f"Tytuł: błąd — {err}")
+                return
+            if title:
+                e_title.delete(0, tk.END)
+                e_title.insert(0, title)
+                self._log(f"Tytuł: {title[:70]}…")
+
+        ttk.Button(f, text="Pobierz tytuł z internetu", command=do_fetch_title).grid(
+            row=4, column=0, sticky=tk.W, pady=(0, 14)
+        )
+
+        btn_fr = ttk.Frame(f)
+        btn_fr.grid(row=5, column=0, sticky=tk.EW)
+
+        def on_ok() -> None:
+            u = e_url.get().strip()
+            if not u.startswith("http"):
+                messagebox.showwarning("URL", "Podaj pełny URL (https://…)", parent=dlg)
+                return
+            t = e_title.get().strip()
+            if not t:
+                title, err = fetch_title(u)
+                if err or not title:
+                    msg = err or "brak tytułu"
+                    if messagebox.askyesno(
+                        "Tytuł",
+                        f"Nie udało się ustawić tytułu automatycznie:\n{msg}\n\n"
+                        "Dodać pozycję jako „Bez tytułu”?",
+                        parent=dlg,
+                    ):
+                        t = "Bez tytułu"
+                    else:
+                        return
+                else:
+                    t = title
+            self._playlist_data.append({"title": t, "url": u})
+            self._refresh_playlist_listbox()
+            self._log(f"Dodano do listy: {t}")
+            dlg.destroy()
+
+        ttk.Button(btn_fr, text="OK", command=on_ok).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_fr, text="Anuluj", command=dlg.destroy).pack(side=tk.LEFT)
+
+        f.columnconfigure(0, weight=1)
+        e_url.focus_set()
+        dlg.geometry("+100+100")
 
     def _playlist_remove(self) -> None:
         sel = self.playlist.curselection()
@@ -287,6 +369,24 @@ class MainApp:
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         inner.bind("<Configure>", _on_configure)
+
+        win_fr = ttk.LabelFrame(inner, text="Okno aplikacji")
+        win_fr.pack(fill=tk.X, padx=4, pady=6)
+        self.lbl_win_current = ttk.Label(
+            win_fr,
+            text="Aktualny rozmiar okna: — (zmień rozmiar okna, wartość się zaktualizuje)",
+        )
+        self.lbl_win_current.pack(anchor=tk.W, padx=8, pady=4)
+        self.lbl_win_saved = ttk.Label(
+            win_fr,
+            text=(
+                f"Ostatnio zapisane w config.json: {self._cfg.window_width} × "
+                f"{self._cfg.window_height} px — powiększ okno i kliknij „Zapisz ustawienia”, żeby zapamiętać."
+            ),
+            wraplength=520,
+            justify=tk.LEFT,
+        )
+        self.lbl_win_saved.pack(anchor=tk.W, padx=8, pady=(0, 8))
 
         pin_fr = ttk.LabelFrame(inner, text="Dostęp do ustawień (PIN)")
         pin_fr.pack(fill=tk.X, padx=4, pady=6)
@@ -453,6 +553,12 @@ class MainApp:
         self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
         self._cfg.seance_slots = slots_to_json(self._slots)
         save_config(self._cfg)
+        self.lbl_win_saved.configure(
+            text=(
+                f"Ostatnio zapisane w config.json: {self._cfg.window_width} × "
+                f"{self._cfg.window_height} px — następny start użyje tego rozmiaru."
+            )
+        )
         self._log("Zapisano config.json.")
         messagebox.showinfo("Zapis", "Zapisano ustawienia.")
 
@@ -495,12 +601,18 @@ class MainApp:
         idx = sel[0]
         entry = self._playlist_data[idx] if idx < len(self._playlist_data) else {}
         url = (entry.get("url") or "").strip()
-        if url.startswith("http"):
-            self._player.load_url(url)
-            self._player.play()
-            self._log(f"Play URL: {url[:60]}…")
-        else:
+        if not url.startswith("http"):
             self._log("Brak URL — dodaj wpis z https://")
+            return
+        self._log("Przygotowanie odtwarzania (YouTube → yt-dlp)…")
+        self.root.update_idletasks()
+        ok, err = self._player.load_url(url)
+        if not ok:
+            self._log(f"Błąd odtwarzania: {err}")
+            messagebox.showerror("Odtwarzacz", err or "Nie udało się załadować URL.")
+            return
+        self._player.play()
+        self._log(f"Odtwarzanie: {(entry.get('title') or url)[:60]}…")
 
     def _on_pause(self) -> None:
         self._player.pause()

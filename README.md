@@ -6,6 +6,7 @@ Desktopowy odtwarzacz audio z harmonogramem seansów, fade i WebSocket — **bez
 
 - Python 3.11+
 - Linux: zainstalowany **VLC** (`vlc`, biblioteki `libvlc`)
+- Dla YouTube: pakiet **ffmpeg** w systemie (`sudo apt install ffmpeg`) — często wymagany, żeby `yt-dlp` i VLC miały poprawny strumień audio
 - Interfejs: **Tkinter** (standardowa biblioteka) — działa na **Raspberry Pi** bez PySide6.
 
 ```bash
