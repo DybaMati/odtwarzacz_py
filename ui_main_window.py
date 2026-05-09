@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine
-from schedule_engine import ScheduleEngine, default_slots_thirteen_to_twentytwo
+from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
 
 
@@ -15,11 +16,13 @@ class MainApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._cfg = load_config()
-        self._slots = default_slots_thirteen_to_twentytwo()
+        self._slots = slots_from_config(self._cfg)
+        self._playlist_data: list[dict[str, str]] = copy.deepcopy(self._cfg.yt_playlist)
         self._schedule = ScheduleEngine(lambda: self._cfg, self._slots)
         self._player = PlayerEngine()
         self._settings_unlocked = not bool(self._cfg.pin_hash_hex)
         self._slider_sync = False
+        self._seance_row_refs: list[dict] = []
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -48,20 +51,44 @@ class MainApp:
         pan = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
         pan.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.Frame(pan, width=360)
-        right = ttk.Frame(pan, width=320)
+        left = ttk.Frame(pan, width=380)
+        right = ttk.Frame(pan, width=340)
         pan.add(left, weight=3)
         pan.add(right, weight=2)
 
-        ttk.Label(left, text="Lista odtwarzania (tytuł + URL — config.json)").pack(anchor=tk.W)
-        self.playlist = tk.Listbox(left, height=12, exportselection=False)
-        self.playlist.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
-        self._fill_playlist_from_config()
+        # —— Playlist ——
+        pl_fr = ttk.LabelFrame(left, text="Playlista (YouTube — URL)")
+        pl_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
 
-        row = ttk.Frame(left)
-        row.pack(fill=tk.X)
-        ttk.Button(row, text="Odtwarzaj", command=self._on_play).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(row, text="Pauza", command=self._on_pause).pack(side=tk.LEFT)
+        row_add = ttk.Frame(pl_fr)
+        row_add.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(row_add, text="Tytuł:").pack(side=tk.LEFT)
+        self.entry_pl_title = ttk.Entry(row_add, width=24)
+        self.entry_pl_title.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        row_add2 = ttk.Frame(pl_fr)
+        row_add2.pack(fill=tk.X, padx=4, pady=(0, 4))
+        ttk.Label(row_add2, text="URL:").pack(side=tk.LEFT)
+        self.entry_pl_url = ttk.Entry(row_add2)
+        self.entry_pl_url.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+
+        row_btns = ttk.Frame(pl_fr)
+        row_btns.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Button(row_btns, text="Dodaj do listy", command=self._playlist_add).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(row_btns, text="Usuń zaznaczone", command=self._playlist_remove).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(row_btns, text="Zapisz playlistę", command=self._playlist_save).pack(side=tk.LEFT)
+
+        self.playlist = tk.Listbox(pl_fr, height=8, exportselection=False)
+        self.playlist.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+        self._refresh_playlist_listbox()
+
+        transport = ttk.Frame(left)
+        transport.pack(fill=tk.X)
+        ttk.Button(transport, text="Odtwarzaj", command=self._on_play).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(transport, text="Pauza", command=self._on_pause).pack(side=tk.LEFT)
 
         ttk.Label(left, text="Pozycja").pack(anchor=tk.W)
         self.var_pos = tk.IntVar(value=0)
@@ -87,14 +114,161 @@ class MainApp:
         )
         self.scale_vol.pack(fill=tk.X)
 
-        ttk.Label(right, text="Harmonogram seansów (domyślnie 13:00–22:00)").pack(anchor=tk.W)
-        self.seance_list = tk.Text(right, height=8, wrap=tk.WORD, state=tk.DISABLED)
-        self.seance_list.pack(fill=tk.X, pady=(0, 6))
-        self._refresh_seance_text_buffer()
+        # —— Seanse ——
+        sec_outer = ttk.LabelFrame(right, text="Harmonogram seansów")
+        sec_outer.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(right, text="Co się dzieje / następne kroki").pack(anchor=tk.W)
-        self.status_box = tk.Text(right, height=14, wrap=tk.WORD, state=tk.DISABLED)
+        btns_fr = ttk.Frame(sec_outer)
+        btns_fr.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Button(btns_fr, text="Dodaj seans", command=self._seance_add).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btns_fr, text="Zapisz harmonogram", command=self._seance_save).pack(side=tk.LEFT)
+
+        cv_se = tk.Canvas(sec_outer, highlightthickness=0, height=220)
+        sb_se = ttk.Scrollbar(sec_outer, orient=tk.VERTICAL, command=cv_se.yview)
+        cv_se.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_se.pack(side=tk.RIGHT, fill=tk.Y)
+        cv_se.configure(yscrollcommand=sb_se.set)
+
+        self.seance_inner = ttk.Frame(cv_se)
+        cv_se.create_window((0, 0), window=self.seance_inner, anchor=tk.NW)
+
+        def _cfg_se(_e: tk.Event) -> None:
+            cv_se.configure(scrollregion=cv_se.bbox("all"))
+
+        self.seance_inner.bind("<Configure>", _cfg_se)
+
+        def _scroll_se(event: tk.Event) -> None:
+            if getattr(event, "num", 0) == 4:
+                cv_se.yview_scroll(-1, "units")
+            elif getattr(event, "num", 0) == 5:
+                cv_se.yview_scroll(1, "units")
+
+        cv_se.bind("<Button-4>", _scroll_se)
+        cv_se.bind("<Button-5>", _scroll_se)
+
+        self._rebuild_seance_rows(cv_se)
+
+        ttk.Label(right, text="Co się dzieje / następne kroki").pack(anchor=tk.W, pady=(6, 0))
+        self.status_box = tk.Text(right, height=12, wrap=tk.WORD, state=tk.DISABLED)
         self.status_box.pack(fill=tk.BOTH, expand=True)
+
+        self._seance_canvas = cv_se
+
+    def _rebuild_seance_rows(self, canvas: tk.Canvas | None = None) -> None:
+        cv = canvas or getattr(self, "_seance_canvas", None)
+        for w in self.seance_inner.winfo_children():
+            w.destroy()
+        self._seance_row_refs.clear()
+
+        for idx, slot in enumerate(self._slots):
+            fr = ttk.Frame(self.seance_inner)
+            fr.pack(fill=tk.X, pady=2, padx=2)
+
+            ven = tk.BooleanVar(value=slot.enabled)
+            ttk.Checkbutton(fr, variable=ven, width=2).pack(side=tk.LEFT, padx=(0, 4))
+
+            ttk.Label(fr, text="Godz.").pack(side=tk.LEFT)
+            sh = tk.Spinbox(fr, from_=0, to=23, width=3, justify=tk.CENTER)
+            sh.delete(0, tk.END)
+            sh.insert(0, str(slot.hour))
+            sh.pack(side=tk.LEFT, padx=2)
+
+            ttk.Label(fr, text="Min.").pack(side=tk.LEFT)
+            sm = tk.Spinbox(fr, from_=0, to=59, width=3, justify=tk.CENTER)
+            sm.delete(0, tk.END)
+            sm.insert(0, str(slot.minute))
+            sm.pack(side=tk.LEFT, padx=2)
+
+            mv = tk.StringVar(value=slot.mode if slot.mode in ("teatr", "finska", "default") else "default")
+            rf = ttk.Frame(fr)
+            rf.pack(side=tk.LEFT, padx=8)
+            ttk.Radiobutton(rf, text="Teatr", variable=mv, value="teatr").pack(side=tk.LEFT, padx=2)
+            ttk.Radiobutton(rf, text="Fińska", variable=mv, value="finska").pack(side=tk.LEFT, padx=2)
+            ttk.Radiobutton(rf, text="Domyśl.", variable=mv, value="default").pack(side=tk.LEFT, padx=2)
+
+            ttk.Button(fr, text="✕", width=3, command=lambda i=idx: self._seance_remove(i)).pack(
+                side=tk.RIGHT, padx=4
+            )
+
+            self._seance_row_refs.append(
+                {"var_en": ven, "spin_h": sh, "spin_m": sm, "mode_var": mv, "idx": idx}
+            )
+
+        if cv:
+            self.seance_inner.update_idletasks()
+            cv.configure(scrollregion=cv.bbox("all"))
+
+    def _read_slots_from_ui(self) -> None:
+        for row in self._seance_row_refs:
+            i = row["idx"]
+            if i >= len(self._slots):
+                continue
+            s = self._slots[i]
+            s.enabled = row["var_en"].get()
+            try:
+                s.hour = max(0, min(23, int(row["spin_h"].get())))
+                s.minute = max(0, min(59, int(row["spin_m"].get())))
+            except (ValueError, tk.TclError):
+                pass
+            m = row["mode_var"].get()
+            s.mode = m if m in ("teatr", "finska", "default") else "default"
+
+    def _seance_add(self) -> None:
+        self._read_slots_from_ui()
+        last = self._slots[-1] if self._slots else SeanceSlot(13, 0, True, "default")
+        self._slots.append(SeanceSlot(last.hour, last.minute, True, "default"))
+        self._rebuild_seance_rows()
+
+    def _seance_remove(self, index: int) -> None:
+        self._read_slots_from_ui()
+        if 0 <= index < len(self._slots):
+            del self._slots[index]
+        self._rebuild_seance_rows()
+
+    def _seance_save(self) -> None:
+        self._read_slots_from_ui()
+        self._cfg.seance_slots = slots_to_json(self._slots)
+        save_config(self._cfg)
+        self._log("Zapisano harmonogram seansów.")
+        messagebox.showinfo("Harmonogram", "Zapisano godziny i tryby seansów.")
+
+    def _refresh_playlist_listbox(self) -> None:
+        self.playlist.delete(0, tk.END)
+        for item in self._playlist_data:
+            title = (item.get("title") or "—").strip()
+            url = (item.get("url") or "").strip()
+            short = url if len(url) <= 42 else url[:39] + "…"
+            self.playlist.insert(tk.END, f"{title}  |  {short}")
+
+    def _playlist_add(self) -> None:
+        title = self.entry_pl_title.get().strip() or "Bez tytułu"
+        url = self.entry_pl_url.get().strip()
+        if not url.startswith("http"):
+            messagebox.showwarning("Playlista", "Podaj pełny URL (https://…)")
+            return
+        self._playlist_data.append({"title": title, "url": url})
+        self.entry_pl_title.delete(0, tk.END)
+        self.entry_pl_url.delete(0, tk.END)
+        self._refresh_playlist_listbox()
+
+    def _playlist_remove(self) -> None:
+        sel = self.playlist.curselection()
+        if not sel:
+            messagebox.showinfo("Playlista", "Zaznacz pozycję na liście.")
+            return
+        i = sel[0]
+        if 0 <= i < len(self._playlist_data):
+            del self._playlist_data[i]
+        self._refresh_playlist_listbox()
+
+    def _playlist_save(self) -> None:
+        if not self._playlist_data:
+            messagebox.showwarning("Playlista", "Lista jest pusta.")
+            return
+        self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
+        save_config(self._cfg)
+        self._log("Zapisano playlistę.")
+        messagebox.showinfo("Playlista", "Zapisano playlistę do config.json.")
 
     def _build_settings_tab(self, notebook: ttk.Notebook) -> None:
         outer = ttk.Frame(notebook)
@@ -276,28 +450,11 @@ class MainApp:
         self._cfg.announcement_default = self.path_default.get().strip()
         self._cfg.window_width = self.root.winfo_width()
         self._cfg.window_height = self.root.winfo_height()
+        self._cfg.yt_playlist = copy.deepcopy(self._playlist_data)
+        self._cfg.seance_slots = slots_to_json(self._slots)
         save_config(self._cfg)
-        self._refresh_seance_text_buffer()
         self._log("Zapisano config.json.")
         messagebox.showinfo("Zapis", "Zapisano ustawienia.")
-
-    def _fill_playlist_from_config(self) -> None:
-        self.playlist.delete(0, tk.END)
-        for item in self._cfg.yt_playlist:
-            title = item.get("title", "—")
-            self.playlist.insert(tk.END, title)
-
-    def _refresh_seance_text_buffer(self) -> None:
-        lines = []
-        for s in self._slots:
-            if not s.enabled:
-                continue
-            lines.append(f"{s.hour:02d}:{s.minute:02d}  ({s.mode})")
-        text = "\n".join(lines) if lines else "(brak)"
-        self.seance_list.configure(state=tk.NORMAL)
-        self.seance_list.delete("1.0", tk.END)
-        self.seance_list.insert("1.0", text)
-        self.seance_list.configure(state=tk.DISABLED)
 
     def _refresh_status_loop(self) -> None:
         self._refresh_status()
@@ -336,14 +493,14 @@ class MainApp:
             self._log("Wybierz pozycję na liście.")
             return
         idx = sel[0]
-        entry = self._cfg.yt_playlist[idx] if idx < len(self._cfg.yt_playlist) else {}
+        entry = self._playlist_data[idx] if idx < len(self._playlist_data) else {}
         url = (entry.get("url") or "").strip()
         if url.startswith("http"):
             self._player.load_url(url)
             self._player.play()
             self._log(f"Play URL: {url[:60]}…")
         else:
-            self._log("Brak URL — ustaw w config.json (playlista).")
+            self._log("Brak URL — dodaj wpis z https://")
 
     def _on_pause(self) -> None:
         self._player.pause()

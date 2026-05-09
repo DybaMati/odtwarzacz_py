@@ -34,8 +34,12 @@ Domyślnie **750×600** px (minimalnie trochę mniej, żeby się mieściło UI).
 
 ## Zakładki
 
-1. **Odtwarzacz i seanse** — lista, transport, suwaki + harmonogram seansów + panel „co się dzieje”.
+1. **Odtwarzacz i seanse** — playlista (tytuł + URL YouTube), transport, suwaki + **edytowalny harmonogram** (checkbox, godzina, minuta, radio Teatr / Fińska / Domyślna, usuń wiersz) + panel „co się dzieje”.
 2. **Ustawienia** — PIN, WS, czasy, fade, ścieżki zapowiedzi (szczegóły w aplikacji).
 3. **Log** — krótki dziennik zdarzeń.
 
-Konfiguracja zapisywana do pliku `config.json` (obok `main.py`).
+Konfiguracja zapisywana do pliku `config.json` (obok `main.py`): pole `yt_playlist` oraz `seance_slots`.
+
+- **Zapisz playlistę** — zapisuje listę utworów.
+- **Zapisz harmonogram** — zapisuje godziny i tryby seansów (bez PIN-u).
+- **Zapisz ustawienia** (zakładka Ustawienia) — zapisuje też aktualną playlistę i seanse do jednego pliku.

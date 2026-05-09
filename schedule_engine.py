@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 from config import AppConfig
 
@@ -67,7 +67,8 @@ class ScheduleEngine:
             duck = cfg.pre_seance_duck_seconds
             rm = cfg.resume_minutes_after_start
             ss = wall_seconds(nearest.hour, nearest.minute)
-            lines.append(f"Najbliższy seans: {t}")
+            ml = mode_label_pl(nearest.mode)
+            lines.append(f"Najbliższy seans: {t} ({ml})")
             lines.append(
                 f"  • Zapytanie WS: ok. {qm} min przed → "
                 f"{self._fmt_before(ss, qm * 60)}"
@@ -118,3 +119,37 @@ class ScheduleEngine:
 def default_slots_thirteen_to_twentytwo() -> list[SeanceSlot]:
     """Domyślna siatka jak w starej liście (13:00–22:00 co godzinę)."""
     return [SeanceSlot(hour=h, minute=0, enabled=True) for h in range(13, 23)]
+
+
+def slots_to_json(slots: list[SeanceSlot]) -> list[dict[str, Any]]:
+    return [
+        {"hour": s.hour, "minute": s.minute, "enabled": s.enabled, "mode": s.mode}
+        for s in slots
+    ]
+
+
+def slots_from_config(cfg: AppConfig) -> list[SeanceSlot]:
+    raw = list(cfg.seance_slots or [])
+    if not raw:
+        return default_slots_thirteen_to_twentytwo()
+    out: list[SeanceSlot] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            h = int(item.get("hour", 0))
+            m = int(item.get("minute", 0))
+            en = bool(item.get("enabled", True))
+            mode = str(item.get("mode", "default")).strip().lower()
+            if mode not in ("teatr", "finska", "default"):
+                mode = "default"
+            h = max(0, min(23, h))
+            m = max(0, min(59, m))
+            out.append(SeanceSlot(hour=h, minute=m, enabled=en, mode=mode))
+        except (TypeError, ValueError):
+            continue
+    return out if out else default_slots_thirteen_to_twentytwo()
+
+
+def mode_label_pl(mode: str) -> str:
+    return {"teatr": "Teatr", "finska": "Fińska", "default": "Domyślna"}.get(mode, mode)
