@@ -781,6 +781,9 @@ class MainApp:
         messagebox.showinfo("Zapis", "Zapisano ustawienia.")
 
     def _refresh_status_loop(self) -> None:
+        # Czytaj bieżące wartości z UI seansów, żeby status i odliczanie
+        # reagowały natychmiast po zmianie godzin/trybu.
+        self._read_slots_from_ui()
         self._refresh_status()
         self._update_active_countdown()
         self.root.after(1000, self._refresh_status_loop)
