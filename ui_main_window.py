@@ -14,6 +14,7 @@ from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine, vlc_setup_hint
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
+from ws_client import WsMonitor
 from ytdlp_utils import fetch_title, get_audio_stream_url, ytdlp_available
 
 
@@ -54,6 +55,8 @@ class MainApp:
         self._ann_prepared_keys: set[str] = set()
         self._announcement_active = False
         self._yt_volume_before_announcement = 70
+        self._ws_alarm_status = "off"
+        self._ws_player_status = "off"
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -78,6 +81,18 @@ class MainApp:
             for line in install_hints_text().splitlines():
                 self._log(line)
         self._log("Zapowiedzi: niezależny player ffplay (nie resetuje streamu YT).")
+        self._ws_alarm = WsMonitor(
+            name="alarm",
+            url=self._cfg.ws_alarm_url,
+            on_status=lambda st, det: self.root.after(0, lambda: self._on_ws_status("alarm", st, det)),
+        )
+        self._ws_player = WsMonitor(
+            name="player",
+            url=self._cfg.ws_player_url,
+            on_status=lambda st, det: self.root.after(0, lambda: self._on_ws_status("player", st, det)),
+        )
+        self._ws_alarm.start()
+        self._ws_player.start()
 
         root.after(900, self._tick_transport)
         root.after(1500, self._refresh_status_loop)
@@ -114,6 +129,20 @@ class MainApp:
         except tk.TclError:
             pass
 
+    def _on_ws_status(self, kind: str, status: str, detail: str) -> None:
+        if kind == "alarm":
+            self._ws_alarm_status = status
+            if hasattr(self, "lbl_ws_alarm_state"):
+                self.lbl_ws_alarm_state.configure(text=f"WS alarmy: {status} ({detail})")
+            if hasattr(self, "lbl_ws_alarm_cfg_state"):
+                self.lbl_ws_alarm_cfg_state.configure(text=f"Status alarmy: {status} ({detail})")
+        else:
+            self._ws_player_status = status
+            if hasattr(self, "lbl_ws_player_state"):
+                self.lbl_ws_player_state.configure(text=f"WS player: {status} ({detail})")
+            if hasattr(self, "lbl_ws_player_cfg_state"):
+                self.lbl_ws_player_cfg_state.configure(text=f"Status player: {status} ({detail})")
+
     def _build_player_tab(self, notebook: ttk.Notebook) -> None:
         tab = ttk.Frame(notebook)
         notebook.add(tab, text="Odtwarzacz i seanse")
@@ -149,6 +178,14 @@ class MainApp:
         transport.pack(fill=tk.X)
         ttk.Button(transport, text="Odtwarzaj", command=self._on_play).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(transport, text="Pauza", command=self._on_pause).pack(side=tk.LEFT)
+        self.lbl_loading = ttk.Label(left, text="YT: gotowy")
+        self.lbl_loading.pack(anchor=tk.W, pady=(4, 0))
+        self.lbl_ann_player_state = ttk.Label(left, text="Zapowiedź player: idle")
+        self.lbl_ann_player_state.pack(anchor=tk.W)
+        self.lbl_ws_alarm_state = ttk.Label(left, text="WS alarmy: off (brak URL)")
+        self.lbl_ws_alarm_state.pack(anchor=tk.W)
+        self.lbl_ws_player_state = ttk.Label(left, text="WS player: off (brak URL)")
+        self.lbl_ws_player_state.pack(anchor=tk.W, pady=(0, 4))
 
         ttk.Label(left, text="Pozycja").pack(anchor=tk.W)
         self.var_pos = tk.IntVar(value=0)
@@ -592,18 +629,6 @@ class MainApp:
         )
         self.lbl_win_saved.pack(anchor=tk.W, padx=8, pady=(0, 8))
 
-        cmd_fr = ttk.LabelFrame(inner, text="Instalacja VLC / yt-dlp — zaznacz myszą, Ctrl+C lub PPM → Kopiuj")
-        cmd_fr.pack(fill=tk.X, padx=4, pady=6)
-        self.install_cmds_text = tk.Text(cmd_fr, height=10, wrap=tk.WORD, font=("Courier", 9))
-        self.install_cmds_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        self._wire_copyable_text(self.install_cmds_text, "install_cmds")
-        self._set_notes_text(self.install_cmds_text, install_hints_text())
-        ttk.Button(
-            cmd_fr,
-            text="Kopiuj całą instalację do schowka",
-            command=lambda: self._copy_text_all(self.install_cmds_text),
-        ).pack(pady=(0, 6))
-
         pin_fr = ttk.LabelFrame(inner, text="Dostęp do ustawień (PIN)")
         pin_fr.pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(pin_fr, text="PIN:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
@@ -627,6 +652,10 @@ class MainApp:
         self.ws_player = ttk.Entry(net_fr)
         self.ws_player.insert(0, self._cfg.ws_player_url)
         self.ws_player.grid(row=1, column=1, sticky=tk.EW, padx=4, pady=2)
+        self.lbl_ws_alarm_cfg_state = ttk.Label(net_fr, text=f"Status alarmy: {self._ws_alarm_status}")
+        self.lbl_ws_alarm_cfg_state.grid(row=2, column=1, sticky=tk.W, padx=4, pady=(0, 2))
+        self.lbl_ws_player_cfg_state = ttk.Label(net_fr, text=f"Status player: {self._ws_player_status}")
+        self.lbl_ws_player_cfg_state.grid(row=3, column=1, sticky=tk.W, padx=4, pady=(0, 2))
         net_fr.columnconfigure(1, weight=1)
 
         time_fr = ttk.LabelFrame(inner, text="Czasy automatyki (minuty)")
@@ -746,6 +775,8 @@ class MainApp:
             self._ann_player.stop()
         except Exception:
             pass
+        self._ws_alarm.stop()
+        self._ws_player.stop()
         self.root.destroy()
 
     def _apply_settings_lock_ui(self) -> None:
@@ -789,6 +820,8 @@ class MainApp:
             return
         self._cfg.ws_alarm_url = self.ws_alarm.get().strip()
         self._cfg.ws_player_url = self.ws_player.get().strip()
+        self._ws_alarm.update_url(self._cfg.ws_alarm_url)
+        self._ws_player.update_url(self._cfg.ws_player_url)
         self._cfg.query_ws_minutes = self._read_spin_int(self.sp_query, self._cfg.query_ws_minutes)
         self._cfg.announcement_minutes_before = self._read_spin_int(
             self.sp_ann, self._cfg.announcement_minutes_before
@@ -856,8 +889,8 @@ class MainApp:
             since_ann_s = (now_s - ann_s) % (24 * 3600)  # ile sekund od zapowiedzi
             # Przygotowanie fade rozpoczynamy w ostatnich ~fade_sec sekundach.
             in_prepare_window = 0 < until_ann_s <= (fade_sec + 2)
-            # Start zapowiedzi ma tolerancję 10s (tick co 1.5s + jitter).
-            in_start_window = since_ann_s <= 10
+            # Start zapowiedzi ma tolerancję 90s (tick/jitter/system lag).
+            in_start_window = since_ann_s <= 90
             if self._announcement_active:
                 continue
 
@@ -933,6 +966,12 @@ class MainApp:
         if key in self._ann_fired_keys:
             return
         self._announcement_active = True
+        if key not in self._ann_prepared_keys:
+            try:
+                self._yt_volume_before_announcement = max(0, min(100, int(self._player.get_volume())))
+            except Exception:
+                self._yt_volume_before_announcement = 70
+            self._player.set_volume(0)
         ok_play, err_play = self._ann_player.play_file(path)
         if not ok_play:
             self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} play() błąd: {err_play}")
@@ -967,6 +1006,9 @@ class MainApp:
 
     def _tick_transport(self) -> None:
         next_ms = 1200
+        if hasattr(self, "lbl_ann_player_state"):
+            ann_txt = "odtwarza" if self._ann_player.is_playing() else "idle"
+            self.lbl_ann_player_state.configure(text=f"Zapowiedź player: {ann_txt}")
         if self._player.available() and not self._slider_sync:
             pos = self._player.get_position()
             self.var_pos.set(int(pos * 1000))
@@ -1029,9 +1071,11 @@ class MainApp:
             if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 30000:
                 self._play_busy = False
                 self._play_busy_since_ms = 0
+                self.lbl_loading.configure(text="YT: timeout ładowania")
                 self._log("Poprzednia próba przekroczyła timeout (30s). Odblokowano ponowną próbę.")
             elif (now_ms - self._last_busy_log_ms) > 1500:
                 self._last_busy_log_ms = now_ms
+                self.lbl_loading.configure(text="YT: Ładowanie... czekaj...")
                 self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
             return
         sel = self.playlist.curselection()
@@ -1061,6 +1105,7 @@ class MainApp:
         self._dbg_label = label
         self._play_busy = True
         self._play_busy_since_ms = now_ms
+        self.lbl_loading.configure(text="YT: Ładowanie... czekaj...")
         self._log(f"Szukam strumienia dla: {label}… (nie blokuje okna)")
 
         def watchdog() -> None:
@@ -1068,6 +1113,7 @@ class MainApp:
                 return
             self._play_busy = False
             self._play_busy_since_ms = 0
+            self.lbl_loading.configure(text="YT: timeout ładowania")
             self._log("Timeout pobierania strumienia (30s). Spróbuj ponownie.")
 
         self.root.after(30000, watchdog)
@@ -1084,6 +1130,7 @@ class MainApp:
                 self._play_busy = False
                 self._play_busy_since_ms = 0
                 if not stream:
+                    self.lbl_loading.configure(text="YT: błąd ładowania")
                     self._log(f"Błąd strumienia: {err or 'nieznany'}")
                     eb = err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?)."
                     messagebox.showerror("Odtwarzacz", eb + "\n\n(Szczegóły są w zakładce Log — można skopiować.)")
@@ -1092,11 +1139,13 @@ class MainApp:
                 self._log(f"DEBUG: stream gotowy po {self._dbg_stream_ms - self._dbg_req_ms}ms")
                 ok_play, err2 = self._player.load_stream_url(stream)
                 if not ok_play:
+                    self.lbl_loading.configure(text="YT: błąd VLC")
                     self._log(f"VLC nie załadował strumienia: {err2}")
                     messagebox.showerror("VLC", err2 or "Błąd odtwarzacza")
                     return
                 ok_start, err_start = self._player.play()
                 if not ok_start:
+                    self.lbl_loading.configure(text="YT: błąd startu")
                     self._log(f"VLC play() błąd: {err_start}")
                     messagebox.showerror(
                         "VLC",
@@ -1105,6 +1154,7 @@ class MainApp:
                     )
                     return
                 self._dbg_play_cmd_ms = int(self.root.tk.call("clock", "milliseconds"))
+                self.lbl_loading.configure(text="YT: odtwarzanie")
                 self._log(f"DEBUG: play() wywołane po {self._dbg_play_cmd_ms - self._dbg_req_ms}ms")
                 self._log(f"Odtwarzanie: {label}")
 
