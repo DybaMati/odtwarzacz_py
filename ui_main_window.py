@@ -9,6 +9,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from announcement_player import AnnouncementPlayer
 from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine, vlc_setup_hint
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
@@ -30,9 +31,11 @@ class MainApp:
         self.root = root
         self._cfg = load_config()
         self._slots = slots_from_config(self._cfg)
+        self._migrate_legacy_seance_modes()
         self._playlist_data: list[dict[str, str]] = copy.deepcopy(self._cfg.yt_playlist)
         self._schedule = ScheduleEngine(lambda: self._cfg, self._slots)
         self._player = PlayerEngine()
+        self._ann_player = AnnouncementPlayer()
         self._settings_unlocked = not bool(self._cfg.pin_hash_hex)
         self._slider_sync = False
         self._seance_row_refs: list[dict] = []
@@ -48,6 +51,9 @@ class MainApp:
         self._last_status_body = ""
         self._last_countdown_text = ""
         self._ann_fired_keys: set[str] = set()
+        self._ann_prepared_keys: set[str] = set()
+        self._announcement_active = False
+        self._yt_volume_before_announcement = 70
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -71,12 +77,27 @@ class MainApp:
             self._log("--- Komendy instalacji (zaznacz w Log lub Zakładka Ustawienia → pole tekstowe) ---")
             for line in install_hints_text().splitlines():
                 self._log(line)
+        self._log("Zapowiedzi: niezależny player ffplay (nie resetuje streamu YT).")
 
         root.after(900, self._tick_transport)
         root.after(1500, self._refresh_status_loop)
         root.bind("<Configure>", self._on_root_configure)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._update_active_countdown()
+
+    def _migrate_legacy_seance_modes(self) -> None:
+        """
+        Migracja starych configów: kiedy wszystkie sloty mają "teatr"
+        (historyczny domyślny wybór), ustaw puste tryby.
+        """
+        if not self._slots:
+            return
+        modes = [s.mode for s in self._slots]
+        if all(m == "teatr" for m in modes):
+            for s in self._slots:
+                s.mode = ""
+            self._cfg.seance_slots = slots_to_json(self._slots)
+            save_config(self._cfg)
 
     def _on_root_configure(self, _event: tk.Event) -> None:
         if not hasattr(self, "lbl_win_current"):
@@ -721,6 +742,10 @@ class MainApp:
             save_config(self._cfg)
         except Exception:
             pass
+        try:
+            self._ann_player.stop()
+        except Exception:
+            pass
         self.root.destroy()
 
     def _apply_settings_lock_ui(self) -> None:
@@ -804,26 +829,34 @@ class MainApp:
         self.root.after(1500, self._refresh_status_loop)
 
     def _check_and_trigger_announcements(self) -> None:
-        """Automatyczny start zapowiedzi X min przed seansem."""
+        """Fade kończy się równo na starcie zapowiedzi (min przed seansem)."""
         now = dt.datetime.now()
         day_key = now.strftime("%Y-%m-%d")
         now_s = now.hour * 3600 + now.minute * 60 + now.second
         pre_min = max(0, int(self._cfg.announcement_minutes_before))
+        fade_sec = max(1, int(max(0, int(self._cfg.fade_out_ms)) / 1000))
 
         # Ogranicz pamięć kluczy do bieżącego dnia.
         self._ann_fired_keys = {k for k in self._ann_fired_keys if k.startswith(day_key + "|")}
+        self._ann_prepared_keys = {k for k in self._ann_prepared_keys if k.startswith(day_key + "|")}
 
         for s in self._slots:
             if not s.enabled:
                 continue
             seans_s = s.hour * 3600 + s.minute * 60
-            trigger_s = seans_s - pre_min * 60
-            if trigger_s < 0:
-                trigger_s += 24 * 3600
-            # okno 4s, żeby nie minąć triggera przy timerze co 1.5s
-            in_window = now_s >= trigger_s and now_s < (trigger_s + 4)
+            ann_s = seans_s - pre_min * 60
+            if ann_s < 0:
+                ann_s += 24 * 3600
             key = f"{day_key}|{s.hour:02d}:{s.minute:02d}|{s.mode}"
-            if not in_window or key in self._ann_fired_keys:
+            if key in self._ann_fired_keys:
+                continue
+
+            fade_start_s = ann_s - fade_sec
+            if fade_start_s < 0:
+                fade_start_s += 24 * 3600
+            in_prepare_window = now_s >= fade_start_s and now_s < ann_s
+            in_start_window = now_s >= ann_s and now_s < (ann_s + 3)
+            if self._announcement_active:
                 continue
 
             mode = s.mode if s.mode in ("teatr", "finska") else ""
@@ -844,42 +877,44 @@ class MainApp:
                 continue
             if not self._player.available():
                 self._ann_fired_keys.add(key)
-                self._log("Zapowiedź pominięta: brak VLC.")
+                self._log("Zapowiedź pominięta: brak VLC (player główny).")
                 continue
 
-            self._ann_fired_keys.add(key)
-            self._play_announcement_with_duck(path, mode, s.hour, s.minute, pre_min)
+            if in_prepare_window and key not in self._ann_prepared_keys:
+                self._ann_prepared_keys.add(key)
+                self._prepare_announcement_duck(key, mode, s.hour, s.minute, ann_s)
+                continue
 
-    def _play_announcement_with_duck(self, path: str, mode: str, h: int, m: int, pre_min: int) -> None:
-        """Ścisz YT (fade-out), odpal zapowiedź, przywróć głośność dla zapowiedzi."""
+            if in_start_window:
+                self._start_announcement(key, path, mode, s.hour, s.minute, pre_min)
+
+    def _prepare_announcement_duck(self, key: str, mode: str, h: int, m: int, ann_s: int) -> None:
+        """Przygotuj fade tak, aby zapowiedź ruszyła dokładnie o godzinie zapowiedzi."""
+        now = dt.datetime.now()
+        now_s = now.hour * 3600 + now.minute * 60 + now.second
+        remaining_sec = ann_s - now_s
+        if remaining_sec < 0:
+            remaining_sec += 24 * 3600
+        remaining_ms = max(150, remaining_sec * 1000 - int(now.microsecond / 1000))
         try:
             base_vol = max(0, min(100, int(self._player.get_volume())))
         except Exception:
             base_vol = 70
-        fade_ms = max(0, int(self._cfg.fade_out_ms))
-        steps = max(1, min(30, int(fade_ms / 120) if fade_ms > 0 else 1))
-        step_delay = max(20, int(fade_ms / steps) if steps > 0 else 20)
+        steps = max(1, min(32, int(remaining_ms / 120)))
+        step_delay = max(20, int(remaining_ms / steps))
+        self._yt_volume_before_announcement = base_vol
 
         self._log(
-            f"START zapowiedzi {mode} dla seansu {h:02d}:{m:02d} ({pre_min} min przed). "
-            f"Duck YT: {base_vol}% -> 0% w {fade_ms}ms"
+            f"Przygotowanie zapowiedzi {mode} {h:02d}:{m:02d}: "
+            f"duck YT {base_vol}% -> 0% przez {remaining_ms}ms, start zapowiedzi równo o czasie zapowiedzi."
         )
 
         def after_duck() -> None:
-            self._player.pause()
-            ok_load, err_load = self._player.load_file(path)
-            if not ok_load:
-                self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} błąd ładowania: {err_load}")
-                return
-            # Zapowiedź ma grać normalnie (jak przed duckiem)
-            self._player.set_volume(base_vol if base_vol > 0 else 70)
-            ok_play, err_play = self._player.play()
-            if not ok_play:
-                self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} play() błąd: {err_play}")
-
-        if base_vol <= 0 or steps <= 1:
             self._player.set_volume(0)
-            self.root.after(30, after_duck)
+
+        if steps <= 1 or base_vol <= 0:
+            self._player.set_volume(0)
+            self.root.after(20, after_duck)
             return
 
         def step(i: int) -> None:
@@ -891,6 +926,36 @@ class MainApp:
                 self.root.after(step_delay, lambda: step(i + 1))
 
         step(1)
+
+    def _start_announcement(self, key: str, path: str, mode: str, h: int, m: int, pre_min: int) -> None:
+        if key in self._ann_fired_keys:
+            return
+        self._announcement_active = True
+        ok_play, err_play = self._ann_player.play_file(path)
+        if not ok_play:
+            self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} play() błąd: {err_play}")
+            self._finish_announcement(key, mode, h, m, failed=True)
+            return
+        self._log(
+            f"START zapowiedzi {mode} dla seansu {h:02d}:{m:02d} "
+            f"({pre_min} min przed seansem, osobny player ffplay)."
+        )
+        self.root.after(250, lambda: self._watch_announcement_end(key, mode, h, m))
+
+    def _watch_announcement_end(self, key: str, mode: str, h: int, m: int) -> None:
+        if self._ann_player.is_playing():
+            self.root.after(250, lambda: self._watch_announcement_end(key, mode, h, m))
+            return
+        self._finish_announcement(key, mode, h, m, failed=False)
+
+    def _finish_announcement(self, key: str, mode: str, h: int, m: int, failed: bool) -> None:
+        self._announcement_active = False
+        self._ann_fired_keys.add(key)
+        self._player.set_volume(self._yt_volume_before_announcement or 70)
+        if failed:
+            self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} nie wystartowała; YT przywrócone.")
+        else:
+            self._log(f"KONIEC zapowiedzi {mode} {h:02d}:{m:02d}; YT wraca od razu.")
 
     def _refresh_status(self) -> None:
         body = self._schedule.next_events_description()

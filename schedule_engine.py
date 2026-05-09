@@ -64,9 +64,10 @@ class ScheduleEngine:
             t = f"{nearest.hour:02d}:{nearest.minute:02d}"
             qm = cfg.query_ws_minutes
             am = cfg.announcement_minutes_before
-            duck = cfg.pre_seance_duck_seconds
+            fade_s = max(1, int(max(0, cfg.fade_out_ms) / 1000))
             rm = cfg.resume_minutes_after_start
             ss = wall_seconds(nearest.hour, nearest.minute)
+            ann_s = (ss - am * 60) % (24 * 3600)
             ml = mode_label_pl(nearest.mode)
             lines.append(f"Najbliższy seans: {t} ({ml})")
             lines.append(
@@ -74,12 +75,12 @@ class ScheduleEngine:
                 f"{self._fmt_before(ss, qm * 60)}"
             )
             lines.append(
-                f"  • Zapowiedź głosowa: ok. {am} min przed → "
-                f"{self._fmt_before(ss, am * 60)}"
+                f"  • Zapowiedź głosowa: {am} min przed seansem → "
+                f"{self._fmt_clock(ann_s)}"
             )
             lines.append(
-                f"  • Duck ~30%: ostatnie {duck}s przed seansem → "
-                f"{self._fmt_window(ss - duck, ss)}"
+                f"  • Duck/fade YT: ostatnie {fade_s}s przed zapowiedzią → "
+                f"{self._fmt_window(ann_s - fade_s, ann_s)}"
             )
             lines.append(
                 f"  • Podgłośnienie po seansie: +{rm} min od godziny seansu → "
@@ -88,11 +89,6 @@ class ScheduleEngine:
         else:
             lines.append("Dziś nie ma już przyszłych seansów (wg listy).")
 
-        lines.append("")
-        lines.append(
-            "Uwaga: faktyczne odpalenie zapowiedzi/duck/restart "
-            "podłączymy w kolejnej iteracji do silnika audio."
-        )
         return "\n".join(lines)
 
     def _fmt_before(self, seans_sec: int, delta_sec: int) -> str:

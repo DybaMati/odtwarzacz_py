@@ -131,6 +131,13 @@ class PlayerEngine:
         if self._player:
             self._player.pause()
 
+    def stop(self) -> None:
+        if self._player:
+            try:
+                self._player.stop()
+            except Exception:
+                pass
+
     def set_volume(self, percent: int) -> None:
         if self._player:
             self._player.audio_set_volume(max(0, min(100, percent)))
