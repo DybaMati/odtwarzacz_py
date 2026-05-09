@@ -783,10 +783,10 @@ class MainApp:
         now_ms = int(self.root.tk.call("clock", "milliseconds"))
         if self._play_busy:
             # Jeśli resolver utknął, odblokuj po czasie i pozwól na ponowną próbę.
-            if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 15000:
+            if self._play_busy_since_ms and (now_ms - self._play_busy_since_ms) > 30000:
                 self._play_busy = False
                 self._play_busy_since_ms = 0
-                self._log("Poprzednia próba przekroczyła timeout (15s). Odblokowano ponowną próbę.")
+                self._log("Poprzednia próba przekroczyła timeout (30s). Odblokowano ponowną próbę.")
             elif (now_ms - self._last_busy_log_ms) > 1500:
                 self._last_busy_log_ms = now_ms
                 self._log("Odtwarzanie już się przygotowuje — poczekaj chwilę.")
@@ -820,9 +820,9 @@ class MainApp:
                 return
             self._play_busy = False
             self._play_busy_since_ms = 0
-            self._log("Timeout pobierania strumienia (15s). Spróbuj ponownie.")
+            self._log("Timeout pobierania strumienia (30s). Spróbuj ponownie.")
 
-        self.root.after(15000, watchdog)
+        self.root.after(30000, watchdog)
 
         def worker() -> None:
             stream: str | None = None

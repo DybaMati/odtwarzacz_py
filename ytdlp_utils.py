@@ -194,6 +194,13 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
     if not _youtube_like(url):
         return url, None
 
+    # Na Raspberry Pi CLI bywa stabilniejsze/szybsze niż moduł Python.
+    cli = _which_ytdlp_cli()
+    if cli:
+        got, err = _stream_via_cli(cli, url)
+        if got:
+            return got, None
+
     try:
         from yt_dlp import YoutubeDL
     except ImportError:
@@ -233,7 +240,6 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
             return picked, None
         last_err = last_err or "Brak pola url w odpowiedzi yt-dlp"
 
-    cli = _which_ytdlp_cli()
     if cli:
         got, err = _stream_via_cli(cli, url)
         if got:
