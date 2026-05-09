@@ -22,7 +22,7 @@ class AnnouncementPlayer:
             return False, f"To nie jest plik: {p}"
 
         with self._lock:
-            self.stop()
+            self._stop_unlocked()
             cmd = [
                 "ffplay",
                 "-nodisp",
@@ -45,12 +45,15 @@ class AnnouncementPlayer:
 
     def stop(self) -> None:
         with self._lock:
-            proc = self._proc
-            if not proc:
-                return
-            if proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-            self._proc = None
+            self._stop_unlocked()
+
+    def _stop_unlocked(self) -> None:
+        proc = self._proc
+        if not proc:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        self._proc = None
