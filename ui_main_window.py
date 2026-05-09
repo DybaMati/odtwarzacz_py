@@ -43,6 +43,11 @@ class MainApp:
         self._play_busy = False
         self._play_busy_since_ms = 0
         self._last_busy_log_ms = 0
+        self._dbg_req_ms = 0
+        self._dbg_stream_ms = 0
+        self._dbg_play_cmd_ms = 0
+        self._dbg_first_sec_logged = False
+        self._dbg_label = ""
 
         root.title("Odtwarzacz — seanse")
         w = max(600, self._cfg.window_width)
@@ -772,6 +777,24 @@ class MainApp:
             self.lbl_time.configure(
                 text=f"Czas: {self._fmt_ms(cur_ms)} / {self._fmt_ms(len_ms)}"
             )
+            if (
+                not self._dbg_first_sec_logged
+                and self._dbg_req_ms > 0
+                and self._dbg_play_cmd_ms > 0
+                and cur_ms >= 1000
+            ):
+                now_ms = int(self.root.tk.call("clock", "milliseconds"))
+                total = now_ms - self._dbg_req_ms
+                to_stream = self._dbg_stream_ms - self._dbg_req_ms if self._dbg_stream_ms else -1
+                to_play = self._dbg_play_cmd_ms - self._dbg_req_ms
+                after_play = now_ms - self._dbg_play_cmd_ms
+                self._dbg_first_sec_logged = True
+                self._log(
+                    "DEBUG startu: "
+                    f"stream={to_stream}ms, play_cmd={to_play}ms, "
+                    f"1s_audio_po_play={after_play}ms, total_do_1s={total}ms "
+                    f"[{self._dbg_label[:48]}]"
+                )
         self.root.after(400, self._tick_transport)
 
     def _fmt_ms(self, ms: int) -> str:
@@ -829,6 +852,11 @@ class MainApp:
             return
 
         label = (entry.get("title") or url)[:80]
+        self._dbg_req_ms = now_ms
+        self._dbg_stream_ms = 0
+        self._dbg_play_cmd_ms = 0
+        self._dbg_first_sec_logged = False
+        self._dbg_label = label
         self._play_busy = True
         self._play_busy_since_ms = now_ms
         self._log(f"Szukam strumienia dla: {label}… (nie blokuje okna)")
@@ -858,6 +886,8 @@ class MainApp:
                     eb = err or "Nie udało się pobrać adresu audio (ffmpeg / yt-dlp / sieć?)."
                     messagebox.showerror("Odtwarzacz", eb + "\n\n(Szczegóły są w zakładce Log — można skopiować.)")
                     return
+                self._dbg_stream_ms = int(self.root.tk.call("clock", "milliseconds"))
+                self._log(f"DEBUG: stream gotowy po {self._dbg_stream_ms - self._dbg_req_ms}ms")
                 ok_play, err2 = self._player.load_stream_url(stream)
                 if not ok_play:
                     self._log(f"VLC nie załadował strumienia: {err2}")
@@ -872,6 +902,8 @@ class MainApp:
                         + "\n\nSprawdź wyjście audio systemu (HDMI/Jack) i pakiety VLC.",
                     )
                     return
+                self._dbg_play_cmd_ms = int(self.root.tk.call("clock", "milliseconds"))
+                self._log(f"DEBUG: play() wywołane po {self._dbg_play_cmd_ms - self._dbg_req_ms}ms")
                 self._log(f"Odtwarzanie: {label}")
 
                 def post_check() -> None:
