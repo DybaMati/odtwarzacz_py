@@ -1008,15 +1008,41 @@ class MainApp:
             return
         self._finish_announcement(key, mode, h, m, failed=False)
 
+    def _fade_main_volume_to(self, target_vol: int, duration_ms: int) -> None:
+        start_vol = max(0, min(100, int(self._player.get_volume())))
+        target = max(0, min(100, int(target_vol)))
+        if duration_ms <= 0 or start_vol == target:
+            self._player.set_volume(target)
+            return
+        steps = max(1, min(36, int(duration_ms / 120)))
+        step_delay = max(20, int(duration_ms / steps))
+
+        def step(i: int) -> None:
+            ratio = i / steps
+            vol = int(start_vol + (target - start_vol) * ratio)
+            self._player.set_volume(vol)
+            if i < steps:
+                self.root.after(step_delay, lambda: step(i + 1))
+
+        step(1)
+
     def _finish_announcement(self, key: str, mode: str, h: int, m: int, failed: bool) -> None:
         self._announcement_active = False
         self._ann_fired_keys.add(key)
-        self._player.set_volume(self._yt_volume_before_announcement or 70)
+        target_vol = self._yt_volume_before_announcement or 70
+        fade_in_ms = max(0, int(self._cfg.fade_in_ms))
+        self._fade_main_volume_to(target_vol, fade_in_ms)
         self._ann_status_text = "idle"
         if failed:
-            self._log(f"Zapowiedź {mode} {h:02d}:{m:02d} nie wystartowała; YT przywrócone.")
+            self._log(
+                f"Zapowiedź {mode} {h:02d}:{m:02d} nie wystartowała; "
+                f"YT przywrócone fade-in {fade_in_ms}ms."
+            )
         else:
-            self._log(f"KONIEC zapowiedzi {mode} {h:02d}:{m:02d}; YT wraca od razu.")
+            self._log(
+                f"KONIEC zapowiedzi {mode} {h:02d}:{m:02d}; "
+                f"YT wraca fade-in {fade_in_ms}ms."
+            )
 
     def _test_default_announcement(self) -> None:
         path = (self._cfg.announcement_default or "").strip()
