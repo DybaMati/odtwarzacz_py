@@ -35,7 +35,7 @@ def _title_via_cli_print(cli: str, page_url: str) -> str | None:
     """Szybka ścieżka — bez pełnego JSON (zwykle znacznie krócej)."""
     try:
         r = subprocess.run(
-            [cli, "--no-warnings", "--skip-download", "--print", "%(title)s", page_url],
+            [cli, "--no-warnings", "--no-playlist", "--skip-download", "--print", "%(title)s", page_url],
             capture_output=True,
             text=True,
             timeout=11,
@@ -55,7 +55,7 @@ def _title_via_cli_print(cli: str, page_url: str) -> str | None:
 def _title_via_cli_json(cli: str, page_url: str) -> tuple[str | None, str | None]:
     try:
         r = subprocess.run(
-            [cli, "--dump-json", "--skip-download", "--no-warnings", page_url],
+            [cli, "--dump-json", "--no-playlist", "--skip-download", "--no-warnings", page_url],
             capture_output=True,
             text=True,
             timeout=18,
@@ -79,7 +79,7 @@ def _stream_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
     for fmt in ("bestaudio/best", "bestaudio", "best", "18"):
         try:
             r = subprocess.run(
-                [cli, "--no-warnings", "--get-url", "-f", fmt, page_url],
+                [cli, "--no-warnings", "--no-playlist", "--get-url", "-f", fmt, page_url],
                 capture_output=True,
                 text=True,
                 timeout=35,
@@ -117,6 +117,7 @@ def fetch_title(url: str) -> tuple[str | None, str | None]:
         fast_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
+            "noplaylist": True,
             "skip_download": True,
             "extract_flat": True,
             "socket_timeout": 10,
@@ -134,6 +135,7 @@ def fetch_title(url: str) -> tuple[str | None, str | None]:
         slow_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
+            "noplaylist": True,
             "skip_download": True,
             "extract_flat": False,
             "socket_timeout": 16,
@@ -214,6 +216,7 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
     base_opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
         "socket_timeout": 28,
     }
     for fmt in format_candidates:
