@@ -10,7 +10,7 @@ from config import AppConfig, load_config, save_config
 from player_engine import PlayerEngine
 from schedule_engine import ScheduleEngine, SeanceSlot, slots_from_config, slots_to_json
 from security import hash_pin, verify_pin
-from ytdlp_utils import fetch_title
+from ytdlp_utils import fetch_title, ytdlp_available
 
 MODE_DISPLAY_TO_VALUE = {"Domyślna": "default", "Teatr": "teatr", "Fińska": "finska"}
 VALUE_TO_DISPLAY = {v: k for k, v in MODE_DISPLAY_TO_VALUE.items()}
@@ -44,6 +44,8 @@ class MainApp:
         self._build_log_tab(notebook)
 
         self._log("Start aplikacji.")
+        ok_yt, yt_desc = ytdlp_available()
+        self._log(f"yt-dlp: {'OK — ' + yt_desc if ok_yt else 'BRAK — zainstaluj pip yt-dlp lub apt yt-dlp'}")
         if not self._player.available():
             self._log("Ostrzeżenie: brak python-vlc / libvlc — transport będzie pusty.")
 

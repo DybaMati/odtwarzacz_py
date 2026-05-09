@@ -23,6 +23,10 @@ pip install -r requirements.txt
 
 Na Raspberry Pi **nie instaluj PySide6** — nie ma stabilnych kół ARM na PyPI; aplikacja używa Tkintera.
 
+### yt-dlp — „brak pakietu”
+
+Działa **albo** moduł Python (`pip install yt-dlp` w **tym samym** venv co `python main.py`), **albo** program systemowy (`sudo apt install yt-dlp`). Aplikacja po starcie wpisuje w **Log**, która opcja jest widoczna.
+
 ## Uruchomienie
 
 ```bash

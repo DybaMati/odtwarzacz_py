@@ -1,8 +1,29 @@
-"""YouTube: pobieranie tytułu i adresu strumienia audio dla VLC (yt-dlp)."""
+"""YouTube: tytuł i URL strumienia — moduł yt_dlp lub program yt-dlp z PATH (apt)."""
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from typing import Any
+
+INSTALL_YT_DLP_MSG = (
+    "Brak yt-dlp dla tego Pythona i brak programu „yt-dlp” w systemie.\n\n"
+    "Opcja A — w folderze projektu (venv):\n"
+    "  cd ~/Desktop/odtwarzacz_py\n"
+    "  python3 -m venv .venv\n"
+    "  source .venv/bin/activate\n"
+    "  pip install --upgrade pip yt-dlp\n"
+    "  python main.py\n\n"
+    "Opcja B — pakiet systemowy (bez pip):\n"
+    "  sudo apt update\n"
+    "  sudo apt install -y yt-dlp ffmpeg\n\n"
+    "Uruchamiaj aplikację tak samo jak instalowałeś pakiet (ten sam venv)."
+)
+
+
+def _which_ytdlp_cli() -> str | None:
+    return shutil.which("yt-dlp")
 
 
 def _youtube_like(url: str) -> bool:
@@ -10,32 +31,83 @@ def _youtube_like(url: str) -> bool:
     return "youtube.com" in u or "youtu.be" in u
 
 
+def _title_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
+    try:
+        r = subprocess.run(
+            [cli, "--dump-json", "--skip-download", "--no-warnings", page_url],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return None, str(e)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or f"kod {r.returncode}"
+        return None, err
+    try:
+        info = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None, "Zła odpowiedź JSON od yt-dlp"
+    title = (info.get("title") or info.get("fulltitle") or "").strip()
+    return (title or None), None
+
+
+def _stream_via_cli(cli: str, page_url: str) -> tuple[str | None, str | None]:
+    last_stderr = ""
+    for fmt in ("bestaudio/best", "bestaudio", "best", "18"):
+        try:
+            r = subprocess.run(
+                [cli, "--no-warnings", "--get-url", "-f", fmt, page_url],
+                capture_output=True,
+                text=True,
+                timeout=50,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return None, str(e)
+        last_stderr = (r.stderr or "").strip()
+        if r.returncode != 0:
+            continue
+        for ln in (r.stdout or "").strip().splitlines():
+            ln = ln.strip()
+            if ln.startswith("http"):
+                return ln, None
+    return None, last_stderr or "yt-dlp --get-url nie zwrócił adresu (zainstaluj ffmpeg?)"
+
+
 def fetch_title(url: str) -> tuple[str | None, str | None]:
     """Zwraca (tytuł, komunikat_błędu)."""
     if not url.strip():
         return None, "Pusty URL"
+
     try:
         from yt_dlp import YoutubeDL
     except ImportError:
-        return None, "Brak pakietu yt-dlp (pip install yt-dlp)"
+        YoutubeDL = None  # type: ignore
 
-    opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": False,
-        "socket_timeout": 20,
-    }
-    try:
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:
-        return None, str(e)
+    if YoutubeDL is not None:
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": False,
+            "socket_timeout": 20,
+        }
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            return None, str(e)
+        if not info:
+            return None, "Brak danych z yt-dlp"
+        title = (info.get("title") or info.get("fulltitle") or "").strip()
+        return (title or None), None
 
-    if not info:
-        return None, "Brak danych z yt-dlp"
-    title = (info.get("title") or info.get("fulltitle") or "").strip()
-    return (title or None), None
+    cli = _which_ytdlp_cli()
+    if cli:
+        return _title_via_cli(cli, url)
+    return None, INSTALL_YT_DLP_MSG
 
 
 def _extract_playable_url(info: Any) -> str | None:
@@ -48,7 +120,6 @@ def _extract_playable_url(info: Any) -> str | None:
         u = fmt.get("url")
         if isinstance(u, str) and u.startswith("http"):
             return u
-    # ostatnia deska ratunku: przejrzyj listę formatów
     for fmt in info.get("formats") or []:
         u = fmt.get("url")
         if isinstance(u, str) and u.startswith("http"):
@@ -71,7 +142,13 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
     try:
         from yt_dlp import YoutubeDL
     except ImportError:
-        return None, "Brak pakietu yt-dlp (pip install yt-dlp)"
+        YoutubeDL = None  # type: ignore
+
+    if YoutubeDL is None:
+        cli = _which_ytdlp_cli()
+        if cli:
+            return _stream_via_cli(cli, url)
+        return None, INSTALL_YT_DLP_MSG
 
     format_candidates = (
         "bestaudio/best",
@@ -100,7 +177,27 @@ def get_audio_stream_url(url: str) -> tuple[str | None, str | None]:
             return picked, None
         last_err = last_err or "Brak pola url w odpowiedzi yt-dlp"
 
+    cli = _which_ytdlp_cli()
+    if cli:
+        got, err = _stream_via_cli(cli, url)
+        if got:
+            return got, None
+        last_err = last_err or err
+
     return None, (
         last_err
-        or "Nie udało się wyciągnąć strumienia. Na Raspberry Pi zwykle pomoże: sudo apt install ffmpeg"
+        or "Nie udało się wyciągnąć strumienia. Spróbuj: sudo apt install ffmpeg"
     )
+
+
+def ytdlp_available() -> tuple[bool, str]:
+    """Czy działa biblioteka lub CLI (krótki opis do logu)."""
+    try:
+        import yt_dlp  # noqa: F401
+        return True, "yt-dlp (moduł Python)"
+    except ImportError:
+        pass
+    cli = _which_ytdlp_cli()
+    if cli:
+        return True, f"yt-dlp (program: {cli})"
+    return False, "brak modułu i brak polecenia yt-dlp"
