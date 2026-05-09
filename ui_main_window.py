@@ -851,11 +851,13 @@ class MainApp:
             if key in self._ann_fired_keys:
                 continue
 
-            fade_start_s = ann_s - fade_sec
-            if fade_start_s < 0:
-                fade_start_s += 24 * 3600
-            in_prepare_window = now_s >= fade_start_s and now_s < ann_s
-            in_start_window = now_s >= ann_s and now_s < (ann_s + 3)
+            # Różnice kołowe (24h), odporne na przejście przez północ.
+            until_ann_s = (ann_s - now_s) % (24 * 3600)  # ile sekund do zapowiedzi
+            since_ann_s = (now_s - ann_s) % (24 * 3600)  # ile sekund od zapowiedzi
+            # Przygotowanie fade rozpoczynamy w ostatnich ~fade_sec sekundach.
+            in_prepare_window = 0 < until_ann_s <= (fade_sec + 2)
+            # Start zapowiedzi ma tolerancję 10s (tick co 1.5s + jitter).
+            in_start_window = since_ann_s <= 10
             if self._announcement_active:
                 continue
 
